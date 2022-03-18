@@ -1,6 +1,19 @@
 # sqm-autorate
 A perl script to automatically adjust SQM rate limits on OpenWrt
 
+Requires OpenWrt packages:
+```
+perl
+perlbase-attributes
+perlbase-list
+perlbase-posix
+perlbase-socket
+perlbase-threads
+perlbase-time
+```
+
+# Configuration Properties
+
 ```
 Property name                   Default value    Units         Description
 ---------------------------------------------------------------------------------------------------------------------------------------
