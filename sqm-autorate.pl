@@ -203,6 +203,7 @@ my $increase_max_pc                = &get_config_property("increase_max_pc",    
 my $increase_load_threshold_pc     = &get_config_property("increase_load_threshold_pc",     70);
 my $increase_delay_after_decrease  = &get_config_property("increase_delay_after_decrease",  600);
 my $increase_delay_after_increase  = &get_config_property("increase_delay_after_increase",  0);
+my $decrease_min_pc                = &get_config_property("decrease_min_pc",                10);
 my $decrease_overshoot_pc          = &get_config_property("decrease_overshoot_pc",          5);
 my $relax_pc                       = &get_config_property("relax_pc",                       5);
 my $relax_load_threshold_pc        = &get_config_property("relax_load_threshold_pc",        50);
@@ -343,7 +344,7 @@ my %reflector_ips          :shared;    # ICMP reflector IP addresses
 my %reflector_packet_ids   :shared;    # Packet ID for each ICMP reflector
 my %reflector_seqs         :shared;    # Current sequence ID for each ICMP reflector
 my %reflector_offsets      :shared;    # Time offset for each ICMP reflector
-my %reflector_half_rtts    :shared;    # Half RTT times for each ICMP reflector (used when calculating the offset)
+my %reflector_minimum_rtts :shared;    # Minimum RTT time seen for each ICMP reflector (used when calculating the offset)
 
 ##################################################################################
 # Constants
@@ -925,10 +926,19 @@ sub check_config {
 		&output(0, "WARNING: Dry run - configuration changes will not be applied");
 	}
 	
+	foreach my $dl_interface (keys(%dl_interface_directions)) {
+		if ($dl_interface =~ /^ifb4/ && $dl_interface_directions{$dl_interface} eq "ingress") {
+			&output(0, "WARNING: \"ingress\" specified for IFB interface $dl_interface. Correcting to \"egress\"");
+			$dl_interface_directions{$dl_interface} = "egress";
+		}
+	}
+		
 	if (!defined($wan_interface) || $wan_interface eq "") {
 		&output(0, "ERROR: WAN interface (\"wan_interface\") not set");
+		$fatal_error = 1;
 	} elsif (scalar(&get_wan_bytes()) == 0) {
 		&output(0, "ERROR: Failed to get statistics for WAN interface \"$wan_interface\" from /proc/net/dev");
+		$fatal_error = 1;
 	}
 	
 	if (!defined($dl_bw_minimum)) {
@@ -1259,7 +1269,7 @@ sub print_latency_results_details {
 			$ul_good ? "good" : "bad",
 			$dl_good ? "good" : "bad",
 			$ul_strike == -1 ? "n/a" : ($ul_strike ? "yes" : "no"),
-			$ul_strike == -1 ? "n/a" : ($ul_strike ? "yes" : "no"),
+			$dl_strike == -1 ? "n/a" : ($dl_strike ? "yes" : "no"),
 			$ignored ? "IGNORED" : ""
 		);		
 	}
@@ -1823,7 +1833,7 @@ sub handle_icmp_reply {
 			$ul_time = ICMP_INVALID;
 			$dl_time = ICMP_INVALID;
 			$rtt = ICMP_INVALID;
-			$offset = &get_current_icmp_offset($from_ip);
+			$offset = &get_icmp_offset($from_ip);
 		} else {
 			# The timestamps were corrected and look ok
 			($icmp_orig, $icmp_recv, $icmp_tran, $icmp_end, $offset) = @corrected_icmp_timestamps;
@@ -1899,13 +1909,13 @@ sub correct_icmp_timestamps {
 	# Get the current offset for this reflector. The offset
 	# attempts to compensate for a stable(ish) difference
 	# between the reflector's timestamps and our timestamps.
-	# See the comments for &get_and_update_icmp_offset().
+	# See the comments for &update_icmp_offset().
 	my $offset_updated = 0;
-	my $offset = &get_current_icmp_offset($reflector_ip);
+	my $offset = &get_icmp_offset($reflector_ip);
 	if (!defined($offset)) {
 		# This must be the first time we've used this reflector
 		# Calculate the offset based on the raw results
-		$offset = &get_and_update_icmp_offset($reflector_ip, $ul_time, $dl_time);
+		$offset = &update_icmp_offset($reflector_ip, $ul_time, $dl_time);
 		$offset_updated = 1;
 	}
 	
@@ -2014,7 +2024,10 @@ sub correct_icmp_timestamps {
 				# reflector may get another chance, depending on how
 				# many strikes it has accumulated.
 				if ($offset_updated) {
-					&cancel_last_icmp_offset_update($reflector_ip);
+					# Delete the stored offset. It will be recalculated the next time
+					# &update_icmp_offset() is called
+					lock(%reflector_offsets);
+					delete($reflector_offsets{$reflector_ip});
 				}
 			
 				if ($debug_icmp_correction) { 
@@ -2088,7 +2101,7 @@ sub correct_icmp_timestamps {
 	if (!$offset_updated) {
 		$ul_time = $icmp_recv - $icmp_orig;
 		$dl_time = $icmp_end - $icmp_tran;
-		$offset = &get_and_update_icmp_offset($reflector_ip, $ul_time, $dl_time);
+		$offset = &update_icmp_offset($reflector_ip, $ul_time, $dl_time);
 	}
 			
 	# Apply the offset to the reflector's ICMP timestamps
@@ -2223,49 +2236,40 @@ sub get_checksum {
 #
 # Obviously we can't know what the difference between the timers is,
 # but we can estimate it based on the minimum possible request/response
-# time. We use the lowest half-round-trip-time seen in the last
-# $icmp_half_rtt_samples. If a request/response is lower than this value,
-# we calculate the number of milliseconds required to bump it up to the
-# minimum, and apply this offset to both the request and the response.
-# We add the offset to the request time, and subtract it from the response
-# time, and the offset can be positive or negative. The minimum
-# response/request time and offset for each target host are stored in a
-# hash and adjusted when necessary.
+# time. We use the lowest half-round-trip-time we've ever seen. If a
+# request/response is lower than this value, we calculate the number of
+# milliseconds required to bump it up to the minimum, and apply this
+# offset to both the request and the response. We add the offset to the
+# request time, and subtract it from the response time, and the offset
+# can be positive or negative. The minimum response/request time and
+# offset for each target host are stored in hashes and adjusted when
+# necessary.
 
 # Get the current ICMP offset for the specified reflector
 # Returns an undefined value if there's no offset for this reflector
-sub get_current_icmp_offset {
+sub get_icmp_offset {
 	my ($reflector_ip) = @_;
 
 	lock(%reflector_offsets);
 
-	my $offset;
-	if (exists($reflector_offsets{$reflector_ip})) {
-		$offset = $reflector_offsets{$reflector_ip};
-	}
-	
-	return $offset;
+	return $reflector_offsets{$reflector_ip};
 }
 
 # Get the current ICMP offset for the specified reflector after updating
 # it based on the new request and response times provided
-sub get_and_update_icmp_offset {
+sub update_icmp_offset {
 	my ($reflector_ip, $request_time, $response_time) = @_;
 
 	lock(%reflector_offsets);
 
-	my $half_rtt = int(($request_time + $response_time) / 2);
+	my $minimum_half_rtt = int(&get_icmp_minimum_rtt($reflector_ip, $request_time + $response_time) / 2);
 
-	my $minimum_half_rtt = &get_icmp_minimum_half_rtt($reflector_ip, $half_rtt);
+	# First ping for this reflector. Start with an offset of 0.
+	if (!exists($reflector_offsets{$reflector_ip})) { $reflector_offsets{$reflector_ip} = 0; }
 
 	# Get the current offset
-	my $offset = &get_current_icmp_offset($reflector_ip);
-
-	if (!defined($offset)) {
-		# First ping for this reflector. Start with an offset of 0.
-		$offset = 0;
-	}
-
+	my $offset = $reflector_offsets{$reflector_ip};
+	
 	# Adjust the offset if necessary
 	if ($request_time + $offset < $minimum_half_rtt) {
 		$offset = $minimum_half_rtt - $request_time;
@@ -2278,79 +2282,18 @@ sub get_and_update_icmp_offset {
 	return $offset;
 }
 
-# Cancels the most recent ICMP offset update for the specified reflector
-# Returns the original ICMP offset, which will be undefined if we're
-# cancelling the first offset update.
-sub cancel_last_icmp_offset_update {
-	my ($reflector_ip) = @_;
-
-	lock(%reflector_offsets);
-	lock(%reflector_half_rtts);
-
-	# Get the half RTT array for this reflector
-	my @samples;
-	if (exists($reflector_half_rtts{$reflector_ip})) {
-		@samples = split(/ /, $reflector_half_rtts{$reflector_ip});
-	} else {
-		# Nothing to do
-		return;
-	}
-	
-	# Remove the most recent half RTT sample
-	pop(@samples);
-	
-	my $offset;
-	if (scalar(@samples) == 0) {
-		# We must be cancelling the first and only offset update for this reflector,
-		# so just delete its hash entry
-		delete($reflector_half_rtts{$reflector_ip});
-	} else {
-		# Store the updated array in the hash as a string
-		$reflector_half_rtts{$reflector_ip} = join(" ", @samples);
-	}
-	
-	# Delete the stored offset. It will be recalculated the next time
-	# &get_and_update_icmp_offset() is called
-	delete($reflector_offsets{$reflector_ip});
-}
-
-# Returns the smallest half RTT seen in the last x samples (x = $icmp_offset_samples).
-# We have to store the samples as a string instead of an array because the hash is shared.
-# It is possible to store arrays in shared hashes, but the syntax to do so is clunky and
-# it probably doesn't provide a significant performance advantage as long as
-# $icmp_offset_samples is kept fairly low (i.e. less than a few hundred).
-sub get_icmp_minimum_half_rtt {
+# Returns the smallest RTT ever seen for the specified reflector, including
+# the new RTT sample provided.
+sub get_icmp_minimum_rtt {
 	my ($reflector_ip, $new_sample) = @_;
 
-	lock(%reflector_half_rtts);
-
-	my @samples;
-	if (exists($reflector_half_rtts{$reflector_ip})) {
-		@samples = split(/ /, $reflector_half_rtts{$reflector_ip});
-	} else {
-		@samples = ();
+	lock(%reflector_minimum_rtts);
+	
+	if (!exists($reflector_minimum_rtts{$reflector_ip}) ||	$new_sample < $reflector_minimum_rtts{$reflector_ip}) {
+		$reflector_minimum_rtts{$reflector_ip} = $new_sample;
 	}
-
-	if (scalar(@samples) != 0) {
-		if (scalar(@samples) < $icmp_offset_samples) {
-			push(@samples, $new_sample);
-		} else {
-			# If a new sample has been provided, remove the oldest sample and append the new one
-			if (defined($new_sample)) {
-				shift(@samples);
-				push(@samples, $new_sample);
-			}
-		}
-	} else {
-		# First sample
-		@samples = ($new_sample);
-	}
-
-	# Store the new array in the hash as a string
-	$reflector_half_rtts{$reflector_ip} = join(" ", @samples);
-
-	# Get the minimum value from the samples and return it
-	return min(@samples);
+	
+	return $reflector_minimum_rtts{$reflector_ip};
 }
 
 # Calculate and return the jitter from a set of values.
@@ -2403,6 +2346,12 @@ sub update_bw_steps {
 
 		# Calculate the percentage decrease required to attain the target bandwidth
 		my $decrease_step_pc = ((&get_current_bandwidth($direction) - $target_bandwidth) / &get_current_bandwidth($direction)) * 100;
+
+		# Make sure that the decrease step is at least $decrease_min_pc
+		# This covers the rare case where the calculated decrease step is negative.
+		# This can happen if more packets arrive on the WAN interface than allowed by
+		# the SQM limit.
+		if ($decrease_step_pc < $decrease_min_pc) { $decrease_step_pc = $decrease_min_pc; }
 
 		# Set the steps 
 		&set_decrease_step_pc($direction, $decrease_step_pc);
@@ -2874,14 +2823,14 @@ sub replace_reflector {
 	lock(%reflector_packet_ids);
 	lock(%reflector_seqs);
 	lock(%reflector_offsets);
-	lock(%reflector_half_rtts);
+	lock(%reflector_minimum_rtts);
 
 	# Remove all the information associated with this reflector
 	delete($reflector_ips{$reflector_ip});
 	delete($reflector_packet_ids{$reflector_ip});
 	delete($reflector_seqs{$reflector_ip});
 	delete($reflector_offsets{$reflector_ip});
-	delete($reflector_half_rtts{$reflector_ip});
+	delete($reflector_minimum_rtts{$reflector_ip});
 	&clear_strikes($reflector_ip, "upload");
 	&clear_strikes($reflector_ip, "download");
 
@@ -3956,13 +3905,15 @@ sub set_bandwidth_for_interface {
 	# Now use tc to change the bandwidth on the fly, without restarting SQM.
 	# The tc command should complete silently.
 	
-	# Ingress SQM qdiscs operate on virtual IFB interfaces
-	my $tc_interface = $interface;
-	if ($direction_if eq "ingress") {
-		$tc_interface = "ifb4" . $interface;
-	}
+	# Ingress SQM qdiscs operate on virtual Intermediary Function Block (IFB) interfaces
+	# Which receive ingress packets on their ingress side, and then send them on to
+	# the kernel on their egress side. The SQM instance operates on this egress side.
+	if ($direction_if eq "ingress" && $interface !~ /^ifb4/) {
+		$interface = "ifb4" . $interface;
+		$direction_if = "egress";
+	}		
 
-	my $tc_command = "tc qdisc change root dev $tc_interface cake bandwidth " . $bandwidth . "Kbit";
+	my $tc_command = "tc qdisc change root dev $interface cake bandwidth " . $bandwidth . "Kbit";
 	if ($debug_bw_changes) { &output(0, "Applying new $direction_if bandwidth $bandwidth Kb/s to $interface: $tc_command"); }
 	my $tc_errors .= &run_sys_command($tc_command);
 	chomp($tc_errors);
