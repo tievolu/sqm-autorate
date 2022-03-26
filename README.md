@@ -39,6 +39,7 @@ increase_max_pc                 25               percent       Maximum percentag
 increase_load_threshold         70               percent       Do not increase bandwidth if less than this proportion of the current bandwidth is being used
 increase_delay_after_decrease   600              seconds       Do not increase bandwidth for this many seconds after a decrease
 increase_delay_after_increase   0                seconds       Do not increase bandwidth for this many seconds after an increase
+decrease_min_pc                 10               percent       Minimum percentage by which bandwidth can be decreased
 decrease_overshoot_pc           5                percent       When calculating decrease steps, the target bandwidth will be [average bad bandwidth] - decrease_overshoot_pc
 relax_pc                        5                percent       Percentage by which bandwidth is increased/decreased when relaxing towards the standard bandwidth
 relax_load_threshold            50               percent       Do not relax bandwidth if more than this proportion of the current bandwidth is being used
