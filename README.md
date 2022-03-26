@@ -12,6 +12,8 @@ perlbase-threads
 perlbase-time
 ```
 
+Requires a list of ICMP reflectors. Make your own, or grab one for your region from https://github.com/tievolu/timestamp-reflectors.
+
 # Configuration Properties
 
 ```
