@@ -152,6 +152,7 @@ use threads;
 use threads::shared;
 use POSIX qw(mktime strftime);
 use Time::HiRes qw(gettimeofday);
+use Time::Local qw(timegm);
 use List::Util qw(shuffle min max sum);
 use Socket qw(SOCK_RAW AF_INET MSG_DONTWAIT inet_ntoa inet_aton sockaddr_in pack_sockaddr_in unpack_sockaddr_in);
 
@@ -240,6 +241,7 @@ my $debug_strike                   = &get_config_property("debug_strike",       
 my $debug_latency_check            = &get_config_property("debug_latency_check",            0);
 my $debug_sys_commands             = &get_config_property("debug_sys_commands",             0);
 my $debug_bw_changes               = &get_config_property("debug_bw_changes",               0);
+my $debug_offsets                  = &get_config_property("debug_offsets",                  0);
 
 # Make sure all bandwidth change info is logged if $debug_bw_changes is enabled
 if ($debug_bw_changes) {
@@ -2186,11 +2188,11 @@ sub get_next_seq {
 
 # Get the number of milliseconds since midnight UTC
 sub get_ms_since_midnight {
-	# Today's date in UTC
+	# Today's date (UTC)
 	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday) = gmtime();
-
-	# Epoch time for 00:00 this morning
-	my $midnight_utc_ms = mktime(0, 0, 0, $mday, $mon, $year) * 1000;
+	
+	# Epoch time for 00:00 this morning (UTC)
+	my $midnight_utc_ms = timegm(0, 0, 0, $mday, $mon, $year) * 1000;
 
 	# Return the difference between now and midnight UTC
 	return &round(gettimeofday() * 1000) - $midnight_utc_ms;
@@ -2273,9 +2275,15 @@ sub update_icmp_offset {
 	# Adjust the offset if necessary
 	if ($request_time + $offset < $minimum_half_rtt) {
 		$offset = $minimum_half_rtt - $request_time;
+		if ($debug_offsets) {
+			&output(0, "OFFSET DEBUG: $reflector_ip offset adjusted: " . $reflector_offsets{$reflector_ip} . " -> $offset (request + offset = " . ($request_time + $reflector_offsets{$reflector_ip}) . ", min = $minimum_half_rtt)");
+		}		
 		$reflector_offsets{$reflector_ip} = $offset;
 	} elsif ($response_time - $offset < $minimum_half_rtt) {
 		$offset = $response_time - $minimum_half_rtt;
+		if ($debug_offsets) {
+			&output(0, "OFFSET DEBUG: $reflector_ip offset adjusted: " . $reflector_offsets{$reflector_ip} . " -> $offset (response - offset = " . ($response_time - $reflector_offsets{$reflector_ip}) . ", min = $minimum_half_rtt)");
+		}
 		$reflector_offsets{$reflector_ip} = $offset;
 	}
 
@@ -2290,6 +2298,9 @@ sub get_icmp_minimum_rtt {
 	lock(%reflector_minimum_rtts);
 	
 	if (!exists($reflector_minimum_rtts{$reflector_ip}) ||	$new_sample < $reflector_minimum_rtts{$reflector_ip}) {
+		if ($debug_offsets) {
+			&output(0, "OFFSET DEBUG: $reflector_ip new minimum RTT: " . $new_sample . " ms");
+		}
 		$reflector_minimum_rtts{$reflector_ip} = $new_sample;
 	}
 	
@@ -2351,7 +2362,9 @@ sub update_bw_steps {
 		# This covers the rare case where the calculated decrease step is negative.
 		# This can happen if more packets arrive on the WAN interface than allowed by
 		# the SQM limit.
-		if ($decrease_step_pc < $decrease_min_pc) { $decrease_step_pc = $decrease_min_pc; }
+		if ($decrease_step_pc < $decrease_min_pc) {
+			$decrease_step_pc = $decrease_min_pc;
+		}
 
 		# Set the steps 
 		&set_decrease_step_pc($direction, $decrease_step_pc);
