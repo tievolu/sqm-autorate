@@ -79,5 +79,5 @@ debug_strike                    0                boolean       Log debug informa
 debug_latency_check             0                boolean       Log debug information for every latency check
 debug_sys_commands              0                boolean       Log debug information when running system commands
 debug_bw_changes                0                boolean       Log debug information when changing bandwidth settings
-debug_offsets                   0                boolean       # Log debug information when adjusting reflector offsets
+debug_offsets                   0                boolean       Log debug information when adjusting reflector offsets
 ```
