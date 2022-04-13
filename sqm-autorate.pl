@@ -540,6 +540,13 @@ sub create_sender_thread {
 			foreach my $reflector_ip (@reflector_ips) {
 				&suspend_self_if_required("sender");
 				
+				# Go through the requests hash and record/clear any requests that have timed out
+				# We need to do this here (i.e. instead of on the receiver thread) to ensure that
+				# requests time out promptly when the connection is in a really bad way or
+				# completely down. Under normal circumstances this operation is very cheap because
+				# there will be a very small number of pending requests (usually zero in fact).
+				&process_icmp_timeouts();
+				
 				# Get the current time
 				my $current_time = gettimeofday();					
 								
@@ -1215,16 +1222,26 @@ sub print_latency_results_summary {
 	my @valid_pings_ul = @{$valid_pings_ul_ref};
 	my @valid_pings_dl = @{$valid_pings_dl_ref};
 	
+	my $ul_time_ave = 0;
+	if (scalar(@valid_pings_ul) != 0) {
+		$ul_time_ave = sum(@valid_pings_ul)/scalar(@valid_pings_ul);
+	}
+	
+	my $dl_time_ave = 0;
+	if (scalar(@valid_pings_ul) != 0) {
+		$dl_time_ave = sum(@valid_pings_dl)/scalar(@valid_pings_dl);
+	}
+	
 	&output(0, sprintf(
 		"LATENCY SUMMARY: count=%-3s ul_bad=%-3s dl_bad=%-3s timed_out=%-3d ul_ave=%-6s ul_max=%-3s ul_jit=%-6s dl_ave=%-6s dl_max=%-3s dl_jit=%-6s ul_bw_ave=%-7s dl_bw_ave=%-7s",
 		$total_results,
 		$ul_bad_count,
 		$dl_bad_count,
 		$timed_out_count,
-		sprintf("%0.2f", sum(@valid_pings_ul)/scalar(@valid_pings_ul)), # ul_time_ave
+		sprintf("%0.2f", $ul_time_ave), # ul_time_ave
 		max(@valid_pings_ul),                                           # ul_time_max
 		sprintf("%0.2f", &get_jitter(@valid_pings_ul)),                 # ul_jitter
-		sprintf("%0.2f", sum(@valid_pings_dl)/scalar(@valid_pings_dl)), # dl_time_ave
+		sprintf("%0.2f", $dl_time_ave), # dl_time_ave
 		max(@valid_pings_dl),                                           # dl_time_max
 		sprintf("%0.2f", &get_jitter(@valid_pings_dl)),                 # dl_jitter
 		sprintf("%0.3f", &kbps_to_mbps($ul_bw_ave)),                    # ul_bw_ave
@@ -1417,8 +1434,9 @@ sub check_latency {
 	RESULT: foreach my $result (@recent_results_copy) {
 		my ($ip, $packet_id, $seq, $ul_time, $dl_time, $start_time, $finish_time) = split(/ /, $result);
 
-		# Get bandwidth usages for the period(s) in which the ICMP request as sent and the ICMP response was received
-		my $ul_bw = &get_bandwidth_usage_at($start_time, "upload"); 
+		# Get bandwidth usages for the period(s) in which the ICMP request was sent and
+		# the ICMP response was received
+		my $ul_bw = &get_bandwidth_usage_at($start_time, "upload");
 		my $dl_bw = &get_bandwidth_usage_at($finish_time, "download");
 
 		# Extra boolean variables for detailed results array
@@ -1433,18 +1451,30 @@ sub check_latency {
 		# out, in which case we want to ignore the result.
 		# A strike is (by definition) a spurious bad result, so we mark the result as "good".
 		if ($reflector_strikeout_threshold != 0) { # if $reflector_strikeout_threshold == 0 strikes are disabled
-			if ($ul_bw < $ul_bw_idle_threshold && ($ul_time == ICMP_TIMED_OUT || $ul_time == ICMP_INVALID || $ul_time > $ul_max_idle_latency)) {
-				&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "upload");
-				$ul_good = 1;
-				$ul_strike = 1;
+			if ($ul_time == ICMP_TIMED_OUT || $ul_time == ICMP_INVALID || $ul_time > $ul_max_idle_latency) {
+				if ($ul_bw < $ul_bw_idle_threshold) {
+					&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "upload");
+					$ul_good = 1;
+					$ul_strike = 1;
+				} else {
+					$ul_good = 0;
+					$ul_strike = 0;
+				}
 			} else {
+				$ul_good = 1;
 				$ul_strike = 0;
 			}
-			if ($dl_bw < $dl_bw_idle_threshold && ($dl_time == ICMP_TIMED_OUT || $dl_time == ICMP_INVALID || $dl_time > $dl_max_idle_latency)) {
-				&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "download");
-				$dl_good = 1;
-				$dl_strike = 1;
+			if ($dl_time == ICMP_TIMED_OUT || $dl_time == ICMP_INVALID || $dl_time > $dl_max_idle_latency) {
+				if ($dl_bw < $dl_bw_idle_threshold) {
+					&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "download");
+					$dl_good = 1;
+					$dl_strike = 1;
+				} else {
+					$dl_good = 0;
+					$dl_strike = 0;
+				}
 			} else {
+				$dl_good = 1;
 				$dl_strike = 0;
 			}
 		}
@@ -1645,25 +1675,24 @@ sub check_latency {
 	}
 
 	# Now work out the overall result
-	my $result = -1;
+	my $overall_result = -1;
 	if ($result_ul == LATENCY_OK && $result_dl == LATENCY_OK) {
-		$result = LATENCY_BOTH_OK;
+		$overall_result = LATENCY_BOTH_OK;
 	} elsif ($result_ul == LATENCY_BAD && $result_dl == LATENCY_OK) {
-		$result = LATENCY_UL_BAD;
+		$overall_result = LATENCY_UL_BAD;
 	} elsif ($result_ul == LATENCY_OK && $result_dl == LATENCY_BAD) {
-		$result = LATENCY_DL_BAD;
+		$overall_result = LATENCY_DL_BAD;
 	} elsif ($result_ul == LATENCY_BAD && $result_dl == LATENCY_BAD) {
-		$result = LATENCY_BOTH_BAD;
+		$overall_result = LATENCY_BOTH_BAD;
 	} elsif ($result_ul == LATENCY_DOWN || $result_dl == LATENCY_DOWN) {
 		# We will have recorded some spurious strikes, so we'll clear them.
 		# This will also clear any legitimate strikes that were recorded
 		# before the connection went down, but we (currently) have no way
 		# to only remove the strikes recorded during this latest cycle,
 		# and this situation will be rare anyway, so this is good enough.
-		%reflector_strikes_ul = ();
-		%reflector_strikes_dl = ();
+		&clear_all_strikes();
 
-		$result = LATENCY_DOWN;
+		$overall_result = LATENCY_DOWN;
 	}
 
 	# Get and store the average bandwidth usage for each direction
@@ -1687,7 +1716,7 @@ sub check_latency {
 		);
 	}
 				
-	return ($result, \@summary_results, \@detailed_results);
+	return ($overall_result, \@summary_results, \@detailed_results);
 }
 
 # Given a result from &check_latency(), check whether latency is bad for the
@@ -1815,9 +1844,6 @@ sub handle_icmp_reply {
 			# We'll continue processing later on to avoid holding the hash locks for longer than necessary
 			$reply_received = 1;
 		}
-
-		# Go through the requests hash and clear any requests that have timed out
-		&process_icmp_timeouts();
 
 		$pending_requests = scalar(keys(%icmp_timeout_times));
 	} 
@@ -2955,7 +2981,7 @@ sub set_strikes {
 	if ($debug_strike) { &output(0, "STRIKE DEBUG: set_strikes ($ip $direction): " . join(" ", @strikes)); }
 }
 
-# Clear all strikes against the specified reflector for the specified direction
+# Clear strikes against the specified reflector for the specified direction
 sub clear_strikes {
 	my ($ip, $direction) = @_;
 	
@@ -2977,6 +3003,13 @@ sub clear_strikes {
 			if ($debug_strike) { &output(0, "STRIKE DEBUG: clear_strikes ($ip $direction)"); }
         }
 	}
+}
+
+# Clear all strikes against all reflectors
+sub clear_all_strikes {
+	%reflector_strikes_ul = ();
+	%reflector_strikes_dl = ();
+	if ($debug_strike) { &output(0, "STRIKE DEBUG: clear_all_strikes"); }
 }
 
 # Check whether a reflector has reached $reflector_strikeout_threshold
@@ -3399,7 +3432,7 @@ sub is_relax_allowed {
 	if ($seconds_until_allowed > 0) {
 		if ($log_if_disallowed) {		
 			&output(0,
-				sprintf("%s relaxation disallowed until %s (%.3f/%ds remaining)",
+				sprintf("%s relaxations disallowed until %s (%.3f/%ds remaining)",
 					ucfirst($direction),
 					$time_at_which_allowed,
 					&round_to_millis($seconds_until_allowed),
@@ -3606,7 +3639,7 @@ sub relax_bandwidth {
 			&round_to_millis(&time_since_last_change($direction))
 		);
 	
-		&output(0, $output_string, 0);
+		&output(1, $output_string, 0);
 	}
 	
 	# Finally, set the bandwidth
