@@ -1227,7 +1227,7 @@ sub print_latency_results_summary {
 	}
 	
 	my $dl_time_ave = 0;
-	if (scalar(@valid_pings_ul) != 0) {
+	if (scalar(@valid_pings_dl) != 0) {
 		$dl_time_ave = sum(@valid_pings_dl)/scalar(@valid_pings_dl);
 	}
 	
@@ -1238,10 +1238,10 @@ sub print_latency_results_summary {
 		$dl_bad_count,
 		$timed_out_count,
 		sprintf("%0.2f", $ul_time_ave), # ul_time_ave
-		max(@valid_pings_ul),                                           # ul_time_max
+		scalar(@valid_pings_ul) != 0 ? max(@valid_pings_ul) : 0,        # ul_time_max
 		sprintf("%0.2f", &get_jitter(@valid_pings_ul)),                 # ul_jitter
 		sprintf("%0.2f", $dl_time_ave), # dl_time_ave
-		max(@valid_pings_dl),                                           # dl_time_max
+		scalar(@valid_pings_dl) != 0 ? max(@valid_pings_dl) : 0,        # dl_time_max
 		sprintf("%0.2f", &get_jitter(@valid_pings_dl)),                 # dl_jitter
 		sprintf("%0.3f", &kbps_to_mbps($ul_bw_ave)),                    # ul_bw_ave
 		sprintf("%0.3f", &kbps_to_mbps($dl_bw_ave))                     # dl_bw_ave
