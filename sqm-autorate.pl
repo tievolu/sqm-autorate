@@ -145,7 +145,7 @@ use strict;
 use warnings;
 
 #######################################################################################
-# Modules                                                                             #
+# Modules
 #######################################################################################
 
 use threads;
@@ -1144,7 +1144,6 @@ sub check_config {
 # If $high_priority == 1, syslog priority user.alert is used, otherwise we use the default (user.notice)
 sub output {
 	my ($send_to_syslog, $message, $high_priority) = @_;
-
 
 	# PID and cycle ID
 	my $id;
@@ -2597,7 +2596,13 @@ sub time_since_last_change {
 	
 	&check_direction($direction);
 	
-	return (gettimeofday() - &read_value_from_file($tmp_file_last_change_time . "_$direction"));
+	my $file = $tmp_file_last_change_time . "_$direction";
+	
+	if (-e $file) {
+		return (gettimeofday() - &read_value_from_file($file));
+	} else {
+		return gettimeofday();
+	}
 }
 
 # Round a value to the nearest integer
