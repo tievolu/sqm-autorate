@@ -1943,7 +1943,6 @@ sub correct_icmp_timestamps {
 		# This must be the first time we've used this reflector
 		# Calculate the offset based on the raw results
 		$offset = &update_icmp_offset($reflector_ip, $ul_time, $dl_time);
-		$offset_updated = 1;
 	}
 	
 	# Apply the offset to the results
@@ -2047,16 +2046,13 @@ sub correct_icmp_timestamps {
 				# The times still look weird. Nothing else we can try
 				# so just discard this result.
 				
-				# If we updated the offset cancel that update. This
-				# reflector may get another chance, depending on how
-				# many strikes it has accumulated.
-				if ($offset_updated) {
-					# Delete the stored offset. It will be recalculated the next time
-					# &update_icmp_offset() is called
-					lock(%reflector_offsets);
-					delete($reflector_offsets{$reflector_ip});
-				}
-			
+				# It's possible that the offset has changed legitimately, for example
+				# due a clock update either on our side or the reflector's side.
+				# So we'll update the offset based on the current results (before we
+				# tried to correct them). If this was a legitimate offset change the
+				# results should be ok the next time this reflector is used.
+				&update_icmp_offset($reflector_ip, ($icmp_recv_before - $icmp_orig_before), ($icmp_end_before - $icmp_tran_before));
+				
 				if ($debug_icmp_correction) { 
 					&output(0, 
 						"ICMP DEBUG: RECEIVE:   WARNING: Timestamps could not be corrected for \"$reflector_ip $id $seq\" using current offset of $offset\n" .
@@ -2121,17 +2117,10 @@ sub correct_icmp_timestamps {
 		}
 	}
 	
-	# If we reach here the result is acceptable. Continue as normal.
+	# If we reach here the result is acceptable, either before or after correction.
 	
-	# If we haven't yet updated the offset, do it now using the
-	# corrected ICMP timestamps
-	if (!$offset_updated) {
-		$ul_time = $icmp_recv - $icmp_orig;
-		$dl_time = $icmp_end - $icmp_tran;
-		$offset = &update_icmp_offset($reflector_ip, $ul_time, $dl_time);
-	}
-			
-	# Apply the offset to the reflector's ICMP timestamps
+	# Update the offset based on the (corrected) ICMP timestamps, and apply it
+	$offset = &update_icmp_offset($reflector_ip, ($icmp_recv - $icmp_orig), ($icmp_end - $icmp_tran));
 	$icmp_recv += $offset;
 	$icmp_tran += $offset;
 	
@@ -2722,7 +2711,7 @@ sub kbps_to_mbps {
 	return sprintf("%.3f", $kbps / 1000);
 }
 
-# Add the bandwidth usage since the  the bandwidth usage statistics
+# Record the bandwidth usage since the last time this subroutine was called
 sub update_bandwidth_usage_stats {
 	# Get the current time and WAN bytes stats
 	my ($current_time, $current_wan_bytes_ref) = &get_wan_bytes();
