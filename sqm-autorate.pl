@@ -1493,14 +1493,14 @@ sub check_latency {
 					$strike_summary = "upload strikes at:";
 					foreach my $strike (reverse(&get_strikes($ip, "upload"))) {
 						if ($strike =~ /^\d+-\d+-(.+)$/) {
-							$strike_summary .= " " . &format_time($1);
+							$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
 						}
 					}
 				} else {
 					$strike_summary = "download strikes at:";
 					foreach my $strike (reverse(&get_strikes($ip, "download"))) {
 						if ($strike =~ /^\d+-\d+-(.+)$/) {
-							$strike_summary .= " " . &format_time($1);
+							$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
 						}
 					}
 				}
