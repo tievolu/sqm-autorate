@@ -3401,14 +3401,15 @@ sub increase_if_appropriate {
 sub decrease_if_appropriate {
 	my ($direction, $summary_results_array_ref, $detailed_results_array_ref) = @_;
 
-	if (&is_bandwidth_at_min($direction, 0)) {
-		return 0;
-	}
-
-	# Print detailed and summary latency results
+	# Always print detailed and summary latency results when a decrease is requested
 	if ($log_bw_changes || $log_details_on_bw_changes) { &print_log_line_separator_if_necessary(); }
 	if ($log_details_on_bw_changes || $debug_latency_check) { &print_latency_results_details(@{$detailed_results_array_ref}); }
 	if ($log_bw_changes) { &print_latency_results_summary(@{$summary_results_array_ref}); }
+
+	if (&is_bandwidth_at_min($direction, 0)) {
+		&output(1, "WARNING: " . ucfirst($direction) . " bandwidth decrease of " . &get_decrease_step_pc($direction) . "% requested, but already at minimum");
+		return 0;
+	}
 
 	return &decrease_bandwidth($direction);
 }
