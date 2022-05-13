@@ -73,6 +73,7 @@ log_bw_changes                  1                boolean       Print information
 log_details_on_bw_changes       1                boolean       When a bandwidth change occurs, print the latency results that triggered it. Automatically enabled if debug_bw_changes=1.
 
 debug_icmp                      0                boolean       Log debug information for each ICMP packet sent and received
+debug_icmp_timeout              0                boolean       Log debug information for ICMP requests that time out
 debug_icmp_correction           0                boolean       Log debug information when attempting to correct unusual ICMP timestamps. Automatically enabled if debug_icmp=1.
 debug_icmp_suspend              0                boolean       Log debug information when suspending and resuming the ICMP threads
 debug_strike                    0                boolean       Log debug information for getting/setting/checking reflector strikes
