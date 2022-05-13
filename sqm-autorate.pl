@@ -235,6 +235,7 @@ my $log_details_on_bw_changes      = &get_config_property("log_details_on_bw_cha
 
 # Debug configuration properties, all disabled by default
 my $debug_icmp                     = &get_config_property("debug_icmp",                     0);
+my $debug_icmp_timeout             = &get_config_property("debug_icmp_timeout",             0);
 my $debug_icmp_correction          = &get_config_property("debug_icmp_correction",          0);
 my $debug_icmp_suspend             = &get_config_property("debug_icmp_suspend",             0);
 my $debug_strike                   = &get_config_property("debug_strike",                   0);
@@ -2134,7 +2135,7 @@ sub process_icmp_timeouts {
 		if ($icmp_timeout_times{$request_sig} <= $current_time) {
 			my ($request_ip, $request_id, $request_seq) = split(/ /, $request_sig);
 
-			if ($debug_icmp) {
+			if ($debug_icmp || $debug_icmp_timeout) {
 				&output(0,
 					"ICMP DEBUG: RECEIVE: TIMED OUT:" .
 					" ip="  . sprintf("%-15s", $request_ip) .
