@@ -1479,45 +1479,42 @@ sub check_latency {
 		}
 
 		# Check whether we should ignore this result
-		{
-			lock(%reflector_ips);
-			if (!exists($reflector_ips{$ip})) {
-				# This reflector has already been struckout and replaced.
-				$ignore_result = 1;
-			} elsif (&is_struckout($ip, "upload") || &is_struckout($ip, "download")){
-				# This reflector has just struckout. Replace it with a new one and ignore this result.
-				
-				# Get information about the strikes
-				my $strike_summary = "";
-				if (&is_struckout($ip, "upload")) {
-					$strike_summary = "upload strikes at:";
-					foreach my $strike (reverse(&get_strikes($ip, "upload"))) {
-						if ($strike =~ /^\d+-\d+-(.+)$/) {
-							$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
-						}
-					}
-				} else {
-					$strike_summary = "download strikes at:";
-					foreach my $strike (reverse(&get_strikes($ip, "download"))) {
-						if ($strike =~ /^\d+-\d+-(.+)$/) {
-							$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
-						}
+		if (lock(%reflector_ips) && !exists($reflector_ips{$ip})) {  # minimise scope of %reflector_ips lock (TODO: Does this actually work as expected?)
+			# This reflector has already been struckout and replaced.
+			$ignore_result = 1;
+		} elsif (&is_struckout($ip, "upload") || &is_struckout($ip, "download")){
+			# This reflector has just struckout. Replace it with a new one and ignore this result.
+			
+			# Get information about the strikes
+			my $strike_summary = "";
+			if (&is_struckout($ip, "upload")) {
+				$strike_summary = "upload strikes at:";
+				foreach my $strike (reverse(&get_strikes($ip, "upload"))) {
+					if ($strike =~ /^\d+-\d+-(.+)$/) {
+						$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
 					}
 				}
+			} else {
+				$strike_summary = "download strikes at:";
+				foreach my $strike (reverse(&get_strikes($ip, "download"))) {
+					if ($strike =~ /^\d+-\d+-(.+)$/) {
+						$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
+					}
+				}
+			}
 				
-				# Replace the reflector
-				my $new_reflector_ip = &replace_reflector($ip);
+			# Replace the reflector
+			my $new_reflector_ip = &replace_reflector($ip);
 				
-				# Log a message
-				&output(0, "BAD REFLECTOR: $ip replaced with $new_reflector_ip due to $strike_summary. Remaining pool: " . scalar(@reflector_pool));
+			# Log a message
+			&output(0, "BAD REFLECTOR: $ip replaced with $new_reflector_ip due to $strike_summary. Remaining pool: " . scalar(@reflector_pool));
 				
-				# Ignore this result
-				$ignore_result = 1;
-			} elsif ($ul_time == ICMP_INVALID && $dl_time == ICMP_INVALID) {
-				# Reflector isn't struckout (yet), but this result was invalid
-				$ignore_result = 1;
-			}				
-		}		
+			# Ignore this result
+			$ignore_result = 1;
+		} elsif ($ul_time == ICMP_INVALID && $dl_time == ICMP_INVALID) {
+			# Reflector isn't struckout (yet), but this result was invalid
+			$ignore_result = 1;
+		}				
 		
 		if ($ignore_result) {
 			if ($need_detailed_results) {
@@ -2852,24 +2849,29 @@ sub get_reflector {
 sub replace_reflector {
 	my ($reflector_ip) = @_;
 
-	lock(%reflector_ips);
-	lock(%reflector_packet_ids);
-	lock(%reflector_seqs);
-	lock(%reflector_offsets);
-	lock(%reflector_minimum_rtts);
-
 	# Remove all the information associated with this reflector
-	delete($reflector_ips{$reflector_ip});
-	delete($reflector_packet_ids{$reflector_ip});
-	delete($reflector_seqs{$reflector_ip});
-	delete($reflector_offsets{$reflector_ip});
-	delete($reflector_minimum_rtts{$reflector_ip});
+	{
+		lock(%reflector_ips);
+		lock(%reflector_packet_ids);
+		lock(%reflector_seqs);
+		lock(%reflector_offsets);
+		lock(%reflector_minimum_rtts);
+		delete($reflector_ips{$reflector_ip});
+		delete($reflector_packet_ids{$reflector_ip});
+		delete($reflector_seqs{$reflector_ip});
+		delete($reflector_offsets{$reflector_ip});
+		delete($reflector_minimum_rtts{$reflector_ip});
+	}
 	&clear_strikes($reflector_ip, "upload");
 	&clear_strikes($reflector_ip, "download");
 
 	# Get a new reflector from the pool
 	my $new_reflector_ip = &get_reflector();
-	$reflector_ips{$new_reflector_ip} = 1;  # The value assigned here is not important.
+
+	{
+		lock(%reflector_ips);
+		$reflector_ips{$new_reflector_ip} = 1;  # The value assigned here is not important.
+	}
 
 	return $new_reflector_ip;
 }
