@@ -2809,7 +2809,7 @@ sub get_reflectors {
 	for (my $i = 0; $i < $number_of_reflectors; $i++) {
 		# Take the next reflector from the pool and add it to our list
 		my $reflector_ip = &get_reflector();
-		$reflectors{$reflector_ip} = 1;
+		$reflectors{$reflector_ip} = &localtime_millis();
 	}
 
 	return %reflectors;
@@ -2831,6 +2831,16 @@ sub get_reflector {
 			@reflector_pool = &get_reflector_pool($reflectors_csv_file);
 			$reflector = shift(@reflector_pool);
 			$reflectors_reloaded = 1;
+			
+			# Print current set of reflectors with seq numbers - this is useful
+			# for identifying the most reliable reflectors
+			&output(0, "INIT: Reflector list at pool reload:");
+			{
+				lock(%reflector_ips);
+				foreach my $reflector_ip (keys(%reflector_ips)) {
+					&output(0, "INIT:\t" . sprintf("%-15s since %s", $reflector_ip, $reflector_ips{$reflector_ip}));
+				}
+			}
 		} else {
 			&fatal_error("Failed to get unique reflector from reflector pool", 1);
 		}
@@ -2871,7 +2881,7 @@ sub replace_reflector {
 
 	{
 		lock(%reflector_ips);
-		$reflector_ips{$new_reflector_ip} = 1;  # The value assigned here is not important.
+		$reflector_ips{$new_reflector_ip} = &localtime_millis();
 	}
 
 	return $new_reflector_ip;
