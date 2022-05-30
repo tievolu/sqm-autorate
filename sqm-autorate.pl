@@ -2629,6 +2629,19 @@ sub format_time {
 	return "$formatted_time.$millis";
 }
 
+# Format a timestamp to a full localtime string, including milliseconds
+sub format_datetime {
+	my ($time) = @_;
+	
+	my ($secs, $millis) = &get_rounded_secs_and_millis($time);
+	
+	my @localtime = localtime($secs);
+	my $date_time = strftime("%a %b %e %H:%M:%S", @localtime);
+	my $year = strftime("%Y", @localtime);
+	
+	return "$date_time.$millis $year";
+}
+
 # Round a number of seconds to the nearest millisecond
 sub round_to_millis {
 	my ($time) = @_;
@@ -2809,7 +2822,7 @@ sub get_reflectors {
 	for (my $i = 0; $i < $number_of_reflectors; $i++) {
 		# Take the next reflector from the pool and add it to our list
 		my $reflector_ip = &get_reflector();
-		$reflectors{$reflector_ip} = &localtime_millis();
+		$reflectors{$reflector_ip} = gettimeofday();
 	}
 
 	return %reflectors;
@@ -2833,12 +2846,14 @@ sub get_reflector {
 			$reflectors_reloaded = 1;
 			
 			# Print current set of reflectors with seq numbers - this is useful
-			# for identifying the most reliable reflectors
+			# for identifying the most reliable reflectors.
+			# The reflector list is sorted by active time.
 			&output(0, "INIT: Reflector list at pool reload:");
 			{
 				lock(%reflector_ips);
-				foreach my $reflector_ip (keys(%reflector_ips)) {
-					&output(0, "INIT:\t" . sprintf("%-15s since %s", $reflector_ip, $reflector_ips{$reflector_ip}));
+				my @sorted_reflector_ips = sort {$reflector_ips{$a} <=> $reflector_ips{$b}} keys(%reflector_ips);
+				foreach my $reflector_ip (@sorted_reflector_ips) {
+					&output(0, "INIT:\t" . sprintf("%-15s since %s", $reflector_ip, &format_datetime($reflector_ips{$reflector_ip})));
 				}
 			}
 		} else {
@@ -2881,7 +2896,7 @@ sub replace_reflector {
 
 	{
 		lock(%reflector_ips);
-		$reflector_ips{$new_reflector_ip} = &localtime_millis();
+		$reflector_ips{$new_reflector_ip} = gettimeofday();
 	}
 
 	return $new_reflector_ip;
