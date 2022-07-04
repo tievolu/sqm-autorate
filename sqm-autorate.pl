@@ -1480,42 +1480,53 @@ sub check_latency {
 		}
 
 		# Check whether we should ignore this result
-		if (lock(%reflector_ips) && !exists($reflector_ips{$ip})) {  # minimise scope of %reflector_ips lock (TODO: Does this actually work as expected?)
-			# This reflector has already been struckout and replaced.
-			$ignore_result = 1;
-		} elsif (&is_struckout($ip, "upload") || &is_struckout($ip, "download")){
-			# This reflector has just struckout. Replace it with a new one and ignore this result.
-			
-			# Get information about the strikes
-			my $strike_summary = "";
-			if (&is_struckout($ip, "upload")) {
-				$strike_summary = "upload strikes at:";
-				foreach my $strike (reverse(&get_strikes($ip, "upload"))) {
-					if ($strike =~ /^\d+-\d+-(.+)$/) {
-						$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
-					}
-				}
-			} else {
-				$strike_summary = "download strikes at:";
-				foreach my $strike (reverse(&get_strikes($ip, "download"))) {
-					if ($strike =~ /^\d+-\d+-(.+)$/) {
-						$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
-					}
-				}
+		
+		# This first check needs to be done separately to minimise the scope of the %reflector_ips
+		# lock, to make sure we're not holding it if/when we call &replace_reflector()
+		{
+			lock(%reflector_ips);
+			if (!exists($reflector_ips{$ip})) {
+				# This reflector has already been struckout and replaced.
+				$ignore_result = 1;
 			}
+		}
+		
+		# Now do the rest of the checks, if necessary
+		if (!$ignore_result) {
+			if (&is_struckout($ip, "upload") || &is_struckout($ip, "download")) {
+				# This reflector has just struckout. Replace it with a new one and ignore this result.
+			
+				# Get information about the strikes
+				my $strike_summary = "";
+				if (&is_struckout($ip, "upload")) {
+					$strike_summary = "upload strikes at:";
+					foreach my $strike (reverse(&get_strikes($ip, "upload"))) {
+						if ($strike =~ /^\d+-\d+-(.+)$/) {
+							$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
+						}
+					}
+				} else {
+					$strike_summary = "download strikes at:";
+					foreach my $strike (reverse(&get_strikes($ip, "download"))) {
+						if ($strike =~ /^\d+-\d+-(.+)$/) {
+							$strike_summary .= " " . &format_time($1 - $reflector_strike_ttl);
+						}
+					}
+				}
 				
-			# Replace the reflector
-			my $new_reflector_ip = &replace_reflector($ip);
+				# Replace the reflector
+				my $new_reflector_ip = &replace_reflector($ip);
 				
-			# Log a message
-			&output(0, "BAD REFLECTOR: $ip replaced with $new_reflector_ip due to $strike_summary. Remaining pool: " . scalar(@reflector_pool));
+				# Log a message
+				&output(0, "BAD REFLECTOR: $ip replaced with $new_reflector_ip due to $strike_summary. Remaining pool: " . scalar(@reflector_pool));
 				
-			# Ignore this result
-			$ignore_result = 1;
-		} elsif ($ul_time == ICMP_INVALID && $dl_time == ICMP_INVALID) {
-			# Reflector isn't struckout (yet), but this result was invalid
-			$ignore_result = 1;
-		}				
+				# Ignore this result
+				$ignore_result = 1;
+			} elsif ($ul_time == ICMP_INVALID && $dl_time == ICMP_INVALID) {
+				# Reflector isn't struckout (yet), but this result was invalid
+				$ignore_result = 1;
+			}
+		}
 		
 		if ($ignore_result) {
 			if ($need_detailed_results) {
@@ -2629,7 +2640,7 @@ sub format_time {
 	return "$formatted_time.$millis";
 }
 
-# Format a timestamp to a full localtime string, including milliseconds
+# Format a timestamp to full localtime string, including milliseconds
 sub format_datetime {
 	my ($time) = @_;
 	
@@ -2846,11 +2857,12 @@ sub get_reflector {
 			$reflectors_reloaded = 1;
 			
 			# Print current set of reflectors with seq numbers - this is useful
-			# for identifying the most reliable reflectors.
-			# The reflector list is sorted by active time.
+			# for identifying the most reliable reflectors
 			&output(0, "INIT: Reflector list at pool reload:");
 			{
 				lock(%reflector_ips);
+				
+				# Sort reflectors by how long they've been active
 				my @sorted_reflector_ips = sort {$reflector_ips{$a} <=> $reflector_ips{$b}} keys(%reflector_ips);
 				foreach my $reflector_ip (@sorted_reflector_ips) {
 					&output(0, "INIT:\t" . sprintf("%-15s since %s", $reflector_ip, &format_datetime($reflector_ips{$reflector_ip})));
