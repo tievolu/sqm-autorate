@@ -156,6 +156,51 @@ use Time::Local qw(timegm);
 use List::Util qw(shuffle min max sum);
 use Socket qw(SOCK_RAW AF_INET MSG_DONTWAIT inet_ntoa inet_aton sockaddr_in pack_sockaddr_in unpack_sockaddr_in);
 
+##################################################################################
+# Constants
+##################################################################################
+
+# ICMP constants
+use constant ICMP_PROTOCOL          => 1;
+use constant ICMP_TIMESTAMP         => 13;
+use constant ICMP_TIMESTAMP_REPLY   => 14;
+use constant ICMP_TIMESTAMP_STRUCT  => "C2 n3 N3";  # Structure of a ICMP timestamp packet
+use constant ICMP_PAYLOAD_OFFSET    => 20;
+
+# Constants for latency results
+use constant LATENCY_OK             =>  1;
+use constant LATENCY_BAD            =>  2;
+use constant LATENCY_BOTH_OK        =>  3;
+use constant LATENCY_UL_BAD         =>  4;
+use constant LATENCY_DL_BAD         =>  5;
+use constant LATENCY_BOTH_BAD       =>  6;
+use constant LATENCY_DOWN           => -1;
+use constant LATENCY_INVALID        => -2;
+
+# Special constants to use in place of genuine ICMP times
+use constant ICMP_INVALID           => 88888;
+use constant ICMP_TIMED_OUT         => 99999;
+
+##################################################################################
+# Shared global variables
+##################################################################################
+
+my $pid                    :shared;    # Process ID
+my $cid                    :shared;    # Latency check cycle ID (incremented with each latency check)
+my $output_lock            :shared;    # Controls access to output streams to avoid interleaving
+my $suspend_icmp_sender    :shared;    # Tells the ICMP Sender thread to suspend/resume itself
+my $suspend_icmp_receiver  :shared;    # Tells the ICMP Receiver thread to suspend/resume itself
+my $sender_suspended       :shared;    # Indicates that the ICMP Sender thread is suspended
+my $receiver_suspended     :shared;    # Indicates that the ICMP Receiver thread is suspended
+my %icmp_timeout_times     :shared;    # Time at which a pending ICMP request will time out
+my %icmp_sent_times        :shared;    # Time at which an ICMP request was sent
+my @recent_results         :shared;    # Recent ICMP results
+my %reflector_ips          :shared;    # ICMP reflector IP addresses
+my %reflector_packet_ids   :shared;    # Packet ID for each ICMP reflector
+my %reflector_seqs         :shared;    # Current sequence ID for each ICMP reflector
+my %reflector_offsets      :shared;    # Time offset for each ICMP reflector
+my %reflector_minimum_rtts :shared;    # Minimum RTT time seen for each ICMP reflector (used when calculating the offset)
+
 #######################################################################################
 # Configuration
 #######################################################################################
@@ -328,51 +373,6 @@ my $last_log_line_was_separator = 0;
 my $force_status_summary = 1;
 my $next_status_summary_time = gettimeofday();
 my $next_latency_check_summary_time = gettimeofday();
-
-##################################################################################
-# Shared global variables
-##################################################################################
-
-my $pid                    :shared;    # Process ID
-my $cid                    :shared;    # Latency check cycle ID (incremented with each latency check)
-my $output_lock            :shared;    # Controls access to output streams to avoid interleaving
-my $suspend_icmp_sender    :shared;    # Tells the ICMP Sender thread to suspend/resume itself
-my $suspend_icmp_receiver  :shared;    # Tells the ICMP Receiver thread to suspend/resume itself
-my $sender_suspended       :shared;    # Indicates that the ICMP Sender thread is suspended
-my $receiver_suspended     :shared;    # Indicates that the ICMP Receiver thread is suspended
-my %icmp_timeout_times     :shared;    # Time at which a pending ICMP request will time out
-my %icmp_sent_times        :shared;    # Time at which an ICMP request was sent
-my @recent_results         :shared;    # Recent ICMP results
-my %reflector_ips          :shared;    # ICMP reflector IP addresses
-my %reflector_packet_ids   :shared;    # Packet ID for each ICMP reflector
-my %reflector_seqs         :shared;    # Current sequence ID for each ICMP reflector
-my %reflector_offsets      :shared;    # Time offset for each ICMP reflector
-my %reflector_minimum_rtts :shared;    # Minimum RTT time seen for each ICMP reflector (used when calculating the offset)
-
-##################################################################################
-# Constants
-##################################################################################
-
-# ICMP constants
-use constant ICMP_PROTOCOL          => 1;
-use constant ICMP_TIMESTAMP         => 13;
-use constant ICMP_TIMESTAMP_REPLY   => 14;
-use constant ICMP_TIMESTAMP_STRUCT  => "C2 n3 N3";  # Structure of a ICMP timestamp packet
-use constant ICMP_PAYLOAD_OFFSET    => 20;
-
-# Constants for latency results
-use constant LATENCY_OK             =>  1;
-use constant LATENCY_BAD            =>  2;
-use constant LATENCY_BOTH_OK        =>  3;
-use constant LATENCY_UL_BAD         =>  4;
-use constant LATENCY_DL_BAD         =>  5;
-use constant LATENCY_BOTH_BAD       =>  6;
-use constant LATENCY_DOWN           => -1;
-use constant LATENCY_INVALID        => -2;
-
-# Special constants to use in place of genuine ICMP times
-use constant ICMP_INVALID           => 88888;
-use constant ICMP_TIMED_OUT         => 99999;
 
 #######################################################################################
 # Initialisation
