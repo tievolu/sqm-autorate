@@ -374,6 +374,9 @@ my $force_status_summary = 1;
 my $next_status_summary_time = gettimeofday();
 my $next_latency_check_summary_time = gettimeofday();
 
+# Number of reflectors that have been struckout
+my $struckout_count = 0;
+
 #######################################################################################
 # Initialisation
 #######################################################################################
@@ -1347,13 +1350,12 @@ sub print_status_summary {
 
 	# Only print the reflector summary if strikes are enabled
 	if ($reflector_strikeout_threshold != 0) {
-		my $bad_reflectors = $initial_reflector_pool_size - scalar(@reflector_pool) - $number_of_reflectors;
 		my $reflector_summary = sprintf(
 			"Reflectors - in use: %d, strikeout threshold: %d, strike TTL: %d, struckout: %d, pool: %d/%d",
 			$number_of_reflectors,
 			$reflector_strikeout_threshold,
 			$reflector_strike_ttl,
-			$bad_reflectors,
+			$struckout_count,
 			scalar(@reflector_pool),
 			$initial_reflector_pool_size
 		);		
@@ -1519,7 +1521,10 @@ sub check_latency {
 				
 				# Log a message
 				&output(0, "BAD REFLECTOR: $ip replaced with $new_reflector_ip due to $strike_summary. Remaining pool: " . scalar(@reflector_pool));
-				
+
+				# Update the struckout count
+				$struckout_count++;
+
 				# Ignore this result
 				$ignore_result = 1;
 			} elsif ($ul_time == ICMP_INVALID && $dl_time == ICMP_INVALID) {
