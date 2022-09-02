@@ -1,18 +1,16 @@
 # sqm-autorate
 A perl script to automatically adjust SQM rate limits on OpenWrt
 
-Requires OpenWrt packages:
-```
-perl
-perlbase-attributes
-perlbase-list
-perlbase-posix
-perlbase-socket
-perlbase-threads
-perlbase-time
-```
+# Basic installation instructions
+(Hopefully I'll get round to writing an installation script at some point!)
 
-Requires a list of ICMP reflectors. Make your own, or grab one for your region from https://github.com/tievolu/timestamp-reflectors.
+1. `wget https://raw.githubusercontent.com/tievolu/sqm-autorate/main/sqm-autorate.pl`
+2. `wget https://raw.githubusercontent.com/tievolu/sqm-autorate/main/sqm-autorate.conf`
+3. `chmod 755 sqm-autorate.pl`
+4. `opkg update; opkg install perl perlbase-attributes perlbase-list perlbase-posix perlbase-socket perlbase-threads perlbase-time`
+5. Edit `sqm-autorate.conf` and set the bandwidth / interface properties for your connection. You can also set the logfile location, but you'll need to handle rotation 6. using logrotate.
+7. Download a list of ICMP type 13 reflectors from https://github.com/tievolu/timestamp-reflectors and update the `reflectors_csv_file` property in `sqm-autorate.conf` with its location. (You can of course create your own list of reflectors if you prefer.)
+8. Run in the foreground: `./sqm-autorate.pl` or in the background: `(./sqm-autorate.pl >/dev/null 2>&1)&`
 
 # Configuration Properties
 
