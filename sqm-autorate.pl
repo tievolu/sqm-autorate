@@ -209,29 +209,25 @@ my %reflector_minimum_rtts :shared;    # Minimum RTT time seen for each ICMP ref
 my $config_file = "sqm-autorate.conf";
 my %config_properties = &get_config_properties($config_file);
 
-# Upload interfaces and directions
+# Upload interfaces
 my $index = 0;
-my %ul_interface_directions;
+my @ul_interfaces = ();
 while(
-	exists($config_properties{"ul_interface." . $index}) &&
-	exists($config_properties{"ul_interface_direction." . $index})
+	exists($config_properties{"ul_interface." . $index})
 ) {
 	my $if_name = $config_properties{"ul_interface." . $index};
-	my $if_direction = $config_properties{"ul_interface_direction." . $index};
-	$ul_interface_directions{$if_name} = $if_direction;
+	push(@ul_interfaces, $if_name);
 	$index++
 }
 
-# Download interfaces and directions
+# Download interfaces
 $index = 0;
-my %dl_interface_directions;
+my @dl_interfaces = ();
 while(
-	exists($config_properties{"dl_interface." . $index}) &&
-	exists($config_properties{"dl_interface_direction." . $index})
+	exists($config_properties{"dl_interface." . $index})
 ) {
 	my $if_name = $config_properties{"dl_interface." . $index};
-	my $if_direction = $config_properties{"dl_interface_direction." . $index};
-	$dl_interface_directions{$if_name} = $if_direction;
+	push(@dl_interfaces, $if_name);
 	$index++;
 }
 
@@ -432,9 +428,9 @@ my $receiver_thread = &create_receiver_thread($fd);
 my $sender_thread = &create_sender_thread($icmp_interval, $fd);
 &output(0, "INIT: Created ICMP Sender thread: " . $sender_thread->tid);
 
-# Get the current bandwidth values from UCI
-$current_bandwidth_ul = &get_current_bandwidth_from_uci("upload");
-$current_bandwidth_dl = &get_current_bandwidth_from_uci("download");
+# Get the current bandwidth values from tc
+$current_bandwidth_ul = &get_current_bandwidth_from_tc("upload");
+$current_bandwidth_dl = &get_current_bandwidth_from_tc("download");
 
 # Check whether the current bandwidths are within the min/max range, and if
 # not, fix them. This can happen if the min/max settings are modified
@@ -936,53 +932,48 @@ sub check_config {
 	my $fatal_error = 0;
 
 	if ($dryrun) {
-		&output(0, "WARNING: Dry run - configuration changes will not be applied");
+		&output(0, "INIT: WARNING: Dry run - configuration changes will not be applied");
 	}
 	
-	foreach my $dl_interface (keys(%dl_interface_directions)) {
-		if ($dl_interface =~ /^ifb4/) {
-			my $corrected_dl_interface =~ s/^ifb4//g;
-			&output(0, "WARNING: Download IFB interface \"$dl_interface\" specified in config file. Correcting to \"$corrected_dl_interface\" (tc settings will be applied to \"$dl_interface\" automatically).");
-			delete($dl_interface_directions{$dl_interface});
-			$dl_interface_directions{$corrected_dl_interface} = "ingress";
-		}
+	if (&check_interfaces() == -1) {
+		$fatal_error = 1;
 	}
 		
 	if (!defined($wan_interface) || $wan_interface eq "") {
-		&output(0, "ERROR: WAN interface (\"wan_interface\") not set");
+		&output(0, "INIT: ERROR: WAN interface (\"wan_interface\") not set");
 		$fatal_error = 1;
 	} elsif (scalar(&get_wan_bytes()) == 0) {
-		&output(0, "ERROR: Failed to get statistics for WAN interface \"$wan_interface\" from /proc/net/dev");
+		&output(0, "INIT: ERROR: Failed to get statistics for WAN interface \"$wan_interface\" from /proc/net/dev");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($dl_bw_minimum)) {
-		&output(0, "ERROR: Minimum download bandwidth (\"dl_bw_minimum\") not set");
+		&output(0, "INIT: ERROR: Minimum download bandwidth (\"dl_bw_minimum\") not set");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($dl_bw_standard)) {
-		&output(0, "ERROR: Standard download bandwidth (\"dl_bw_standard\") not set");
+		&output(0, "INIT: ERROR: Standard download bandwidth (\"dl_bw_standard\") not set");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($dl_bw_maximum)) {
-		&output(0, "ERROR: Maximum download bandwidth (\"dl_bw_maximum\") not set");
+		&output(0, "INIT: ERROR: Maximum download bandwidth (\"dl_bw_maximum\") not set");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($ul_bw_minimum)) {
-		&output(0, "ERROR: Minimum upload bandwidth (\"ul_bw_minimum\")not set");
+		&output(0, "INIT: ERROR: Minimum upload bandwidth (\"ul_bw_minimum\")not set");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($ul_bw_standard)) {
-		&output(0, "ERROR: Standard upload bandwidth (\"ul_bw_standard\") not set");
+		&output(0, "INIT: ERROR: Standard upload bandwidth (\"ul_bw_standard\") not set");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($ul_bw_maximum)) {
-		&output(0, "ERROR: Maximum upload bandwidth (\"ul_bw_maximum\") not set");
+		&output(0, "INIT: ERROR: Maximum upload bandwidth (\"ul_bw_maximum\") not set");
 		$fatal_error = 1;
 	}
 	
@@ -991,141 +982,141 @@ sub check_config {
 		defined($ul_bw_minimum) && defined($ul_bw_standard) && defined($ul_bw_maximum)
 	) {
 		if ($dl_bw_minimum >= $dl_bw_maximum) {
-			&output(0, "ERROR: Minimum download bandwidth (\"dl_bw_minimum\") must be lower than maximum download bandwidth (\"dl_bw_maximum\")");
+			&output(0, "INIT: ERROR: Minimum download bandwidth (\"dl_bw_minimum\") must be lower than maximum download bandwidth (\"dl_bw_maximum\")");
 			$fatal_error = 1;
 		}
 	
 		if ($ul_bw_minimum >= $ul_bw_maximum) {
-			&output(0, "ERROR: Minimum upload bandwidth (\"ul_bw_minimum\") must be lower than maximum upload bandwidth (\"ul_bw_maximum\")");
+			&output(0, "INIT: ERROR: Minimum upload bandwidth (\"ul_bw_minimum\") must be lower than maximum upload bandwidth (\"ul_bw_maximum\")");
 			$fatal_error = 1;
 		}
 	
 		if ($dl_bw_standard <= $dl_bw_minimum || $dl_bw_standard >= $dl_bw_maximum) {
-			&output(0, "Standard download bandwidth (\"dl_bw_standard\") must be between minimum and maximum download bandwidths (\"dl_bw_minimum\" and \"dl_bw_maximum\")");
+			&output(0, "INIT: ERROR: Standard download bandwidth (\"dl_bw_standard\") must be between minimum and maximum download bandwidths (\"dl_bw_minimum\" and \"dl_bw_maximum\")");
 			$fatal_error = 1;
 		}
 	
 		if ($ul_bw_standard <= $ul_bw_minimum || $ul_bw_standard >= $ul_bw_maximum) {
-			&output(0, "ERROR: Standard upload bandwidth (\"ul_bw_standard\") must be between minimum and maximum upload bandwidths (\"ul_bw_minimum\" and \"ul_bw_maximum\")");
+			&output(0, "INIT: ERROR: Standard upload bandwidth (\"ul_bw_standard\") must be between minimum and maximum upload bandwidths (\"ul_bw_minimum\" and \"ul_bw_maximum\")");
 			$fatal_error = 1;
 		}
 	}
 	
 	if ($max_recent_results < 1) {
-		&output(0, "ERROR: Maximum recent results (\"max_recent_results\") must be greater than 0");
+		&output(0, "INIT: ERROR: Maximum recent results (\"max_recent_results\") must be greater than 0");
 		$fatal_error = 1;
 	}
 	
 	if ($icmp_offset_samples  < 5) {
-		&output(0, "ERROR: ICMP offset samples (\"icmp_offset_samples \") must be 5 or greater");
+		&output(0, "INIT: ERROR: ICMP offset samples (\"icmp_offset_samples \") must be 5 or greater");
 		$fatal_error = 1;
 	}
 	
 	if ($increase_load_threshold_pc < 0 || $increase_load_threshold_pc > 100) {
-		&output(0, "ERROR: Increase load threshold percentage (\"increase_load_threshold_pc\") must be between 0 and 100");
+		&output(0, "INIT: ERROR: Increase load threshold percentage (\"increase_load_threshold_pc\") must be between 0 and 100");
 		$fatal_error = 1;
 	}
 	
 	if ($increase_delay_after_decrease < 0) {
-		&output(0, "ERROR: Increase delay after increase (\"increase_delay_after_decrease\") cannot be negative");
+		&output(0, "INIT: ERROR: Increase delay after increase (\"increase_delay_after_decrease\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($increase_delay_after_decrease < 0) {
-		&output(0, "ERROR: Increase delay after decrease (\"increase_delay_after_decrease\") cannot be negative");
+		&output(0, "INIT: ERROR: Increase delay after decrease (\"increase_delay_after_decrease\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($relax_delay < 0) {
-		&output(0, "ERROR: Relaxation delay (\"relax_delay\") cannot be negative");
+		&output(0, "INIT: ERROR: Relaxation delay (\"relax_delay\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($relax_pc < 0) {
-		&output(0, "ERROR: Relaxation percentage step (\"relax_pc\") cannot be negative");
+		&output(0, "INIT: ERROR: Relaxation percentage step (\"relax_pc\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($relax_load_threshold_pc < 0 || $relax_load_threshold_pc > 100) {
-		&output(0, "ERROR: Relaxation load threshold percentage (\"relax_load_threshold_pc\") must be between 0 and 100");
+		&output(0, "INIT: ERROR: Relaxation load threshold percentage (\"relax_load_threshold_pc\") must be between 0 and 100");
 		$fatal_error = 1;
 	}
 
 	if ($icmp_interval <= 0) {
-		&output(0, "ERROR: ICMP interval (\"icmp_interval\") must be greater than 0");
+		&output(0, "INIT: ERROR: ICMP interval (\"icmp_interval\") must be greater than 0");
 		$fatal_error = 1;
 	}
 	
 	if ($icmp_timeout <= 0) {
-		&output(0, "ERROR: ICMP timeout (\"icmp_timeout\") must be greater than 0");
+		&output(0, "INIT: ERROR: ICMP timeout (\"icmp_timeout\") must be greater than 0");
 		$fatal_error = 1;
 	}
 	
 	if ($latency_check_interval < 0) {
-		&output(0, "ERROR: Latency check interval (\"latency_check_interval\") cannot be negative");
+		&output(0, "INIT: ERROR: Latency check interval (\"latency_check_interval\") cannot be negative");
 		$fatal_error = 1;
 	}
 
 	if ($latency_check_summary_interval < 0) {
-		&output(0, "ERROR: Latency check summary interval (\"latency_check_summary_interval\") cannot be negative");
+		&output(0, "INIT: ERROR: Latency check summary interval (\"latency_check_summary_interval\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($bad_ping_pc < 0 || $bad_ping_pc > 100) {
-		&output(0, "ERROR: Bad ping percentage (\"bad_ping_pc\") must be between 0 and 100");
+		&output(0, "INIT: ERROR: Bad ping percentage (\"bad_ping_pc\") must be between 0 and 100");
 		$fatal_error = 1;
 	}
 
 	if ($icmp_offset_samples < 0) {
-		&output(0, "ERROR: ICMP offset samples (\"icmp_offset_samples\") cannot be negative");
+		&output(0, "INIT: ERROR: ICMP offset samples (\"icmp_offset_samples\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($ul_max_idle_latency < 0) {
-		&output(0, "ERROR: Maximum idle upload latency (\"ul_max_idle_latency\") cannot be negative");
+		&output(0, "INIT: ERROR: Maximum idle upload latency (\"ul_max_idle_latency\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
 	if ($dl_max_idle_latency < 0) {
-		&output(0, "ERROR: Maximum idle download latency (\"dl_max_idle_latency\") cannot be negative");
+		&output(0, "INIT: ERROR: Maximum idle download latency (\"dl_max_idle_latency\") cannot be negative");
 		$fatal_error = 1;
 	}
 
 	if (!defined($ul_max_loaded_latency) || $ul_max_loaded_latency < 0) {
-		&output(0, "ERROR: Maximum loaded upload latency (\"ul_max_loaded_latency\") must be set to positive value");
+		&output(0, "INIT: ERROR: Maximum loaded upload latency (\"ul_max_loaded_latency\") must be set to positive value");
 		$fatal_error = 1;
 	}
 
 	if (!defined($dl_max_loaded_latency) || $dl_max_loaded_latency < 0) {
-		&output(0, "ERROR: Maximum loaded download latency (\"dl_max_loaded_latency\") must be set to positive value");
+		&output(0, "INIT: ERROR: Maximum loaded download latency (\"dl_max_loaded_latency\") must be set to positive value");
 		$fatal_error = 1;
 	}
 
 	if ($ul_bw_idle_threshold < 0 || $ul_bw_idle_threshold >= $ul_bw_maximum) {
-		&output(0, "ERROR: Upload idle bandwidth threshold (\"ul_bw_idle_threshold\") must be between 0 and maximum upload bandwidth (\"ul_bw_maximum\")");
+		&output(0, "INIT: ERROR: Upload idle bandwidth threshold (\"ul_bw_idle_threshold\") must be between 0 and maximum upload bandwidth (\"ul_bw_maximum\")");
 		$fatal_error = 1;
 	}
 	
 	if ($dl_bw_idle_threshold < 0 || $dl_bw_idle_threshold >= $dl_bw_maximum) {
-		&output(0, "ERROR: Download idle bandwidth threshold (\"dl_bw_idle_threshold\") must be between 0 and maximum download bandwidth (\"dl_bw_maximum\")");
+		&output(0, "INIT: ERROR: Download idle bandwidth threshold (\"dl_bw_idle_threshold\") must be between 0 and maximum download bandwidth (\"dl_bw_maximum\")");
 		$fatal_error = 1;
 	}
 	
 	if (!defined($reflectors_csv_file) || $reflectors_csv_file eq "") {
-		&output(0, "ERROR: No reflector CSV file specified (\"reflectors_csv_file\"). Download one for your region from https://github.com/tievolu/timestamp-reflectors");
+		&output(0, "INIT: ERROR: No reflector CSV file specified (\"reflectors_csv_file\"). Download one for your region from https://github.com/tievolu/timestamp-reflectors");
 		$fatal_error = 1;
 	} elsif (! -e $reflectors_csv_file) {
-		&output(0, "ERROR: Specified reflector CSV file does not exist: $reflectors_csv_file");
+		&output(0, "INIT: ERROR: Specified reflector CSV file does not exist: $reflectors_csv_file");
 		$fatal_error = 1;
 	}
 	
 	if ($number_of_reflectors <= 0) {
-		&output(0, "ERROR: Number of reflectors (\"number_of_reflectors\") must be greater than 0");
+		&output(0, "INIT: ERROR: Number of reflectors (\"number_of_reflectors\") must be greater than 0");
 		$fatal_error = 1;
 	}
 
 	if ($reflector_strikeout_threshold < 0) {
-		&output(0, "ERROR: Reflector strikeout threshold (\"reflector_strikeout_threshold\") cannot be less than 0");
+		&output(0, "INIT: ERROR: Reflector strikeout threshold (\"reflector_strikeout_threshold\") cannot be less than 0");
 		$fatal_error = 1;
 	}
 	
@@ -1142,6 +1133,52 @@ sub check_config {
 	if ($fatal_error) {
 		&fatal_error("Invalid configuration. See log for more details.");
 	}
+}
+
+# Check that SQM instances exist for the configured interfaces
+sub check_interfaces {
+	my @qdiscs = split(/\n/, &run_sys_command("tc -d qdisc"));
+	
+	# Return value of 1 means success. -1 will be returned if we hit a problem.
+	my $return_value = 1;
+	
+	# Upload interfaces
+	UL_INTERFACE: for (my $i = 0; $i < scalar(@ul_interfaces); $i++) {
+		foreach my $qdisc (@qdiscs) {
+			# Check specified interface as-is
+			if ($qdisc =~ / dev $ul_interfaces[$i] /) {
+				&output(0, "INIT: Found upload SQM instance on " . $ul_interfaces[$i]);
+				next UL_INTERFACE;
+			}
+		}
+		
+		&output(0, "INIT: ERROR: No upload SQM instance found for $ul_interfaces[$i] - check configuration");
+		$return_value = -1;
+	}
+	
+	# Download interfaces
+	DL_INTERFACE: for (my $i = 0; $i < scalar(@dl_interfaces); $i++) {
+		foreach my $qdisc (@qdiscs) {
+			# Check interface as-is if this interface is not already configured as an upload interface
+			if (!grep(/$dl_interfaces[$i]/, @ul_interfaces) && $qdisc =~ / dev $dl_interfaces[$i] /) {
+				&output(0, "INIT: Found download SQM instance on " . $dl_interfaces[$i]);
+				next DL_INTERFACE;
+			}
+			
+			# If this is a non-IFB interface, check for a corresponding IFB interface
+			if ($dl_interfaces[$i] !~ /^ifb4/ && $qdisc =~ / dev ifb4$dl_interfaces[$i] /) {
+				# Found IFB interface - modify configuration accordingly
+				$dl_interfaces[$i] = "ifb4" . $dl_interfaces[$i];
+				&output(0, "INIT: Found download SQM instance on " . $dl_interfaces[$i]);
+				next DL_INTERFACE;
+			}
+		}
+		
+		&output(0, "INIT: ERROR: No download SQM instance found for $dl_interfaces[$i] - check configuration");
+		$return_value = -1;
+	}
+	
+	return $return_value;
 }
 
 # Print the specified message to the console and log file, if enabled.
@@ -3068,7 +3105,7 @@ sub is_struckout {
 
 # Returns the current bandwidth for the specified direction (download|upload)
 # The value returned here is the value maintained by this script.
-# Use &get_current_bandwidth_from_uci() to refresh the value from UCI.
+# Use &get_current_bandwidth_from_tc() to refresh the value from tc.
 sub get_current_bandwidth {
 	my ($direction) = @_;
 	
@@ -3083,55 +3120,29 @@ sub get_current_bandwidth {
 
 # Returns the current bandwidth for the specified direction (download|upload)
 # from the SQM config. We should only need to do this once during initialisation.
-sub get_current_bandwidth_from_uci {
+sub get_current_bandwidth_from_tc {
 	my ($direction) = @_;
-
-	&check_direction($direction);
-
-	# Take the first interface configured for the specified direction
-	# (The bandwidth should be the same on all of them)
-	my $interface = "";
-	my $direction_uci = "";
-	if ($direction eq "download") {
-		my @dl_interfaces = keys(%dl_interface_directions);
-		$interface = $dl_interfaces[0];
-		my $interface_dir = $dl_interface_directions{$interface};
-		
-		# UCI uses "download" for ingress, "upload" for egress
-		if ($interface_dir eq "ingress") {
-			$direction_uci = "download";
-		} elsif ($interface_dir eq "egress") {
-			$direction_uci = "upload";
-		} else {
-			&fatal_error("Invalid interface direction for $interface: $interface_dir");
-		}
-	}
-	if ($direction eq "upload") {
-		my @ul_interfaces = keys(%ul_interface_directions);
-		$interface = $ul_interfaces[0];
-		my $interface_dir = $ul_interface_directions{$interface};
-
-		# UCI uses "download" for ingress, "upload" for egress
-		if ($interface_dir eq "ingress") {
-			$direction_uci = "download";
-		} elsif ($interface_dir eq "egress") {
-			$direction_uci = "upload";
-		} else {
-			&fatal_error("Invalid interface direction for $interface: $interface_dir");
-		}
-	}
-
-	# Get the bandwidth from UCI
-	my $uci_command = "uci get sqm.$interface.$direction_uci";
-	my $result = &run_sys_command($uci_command);
 	
-	if ($direction eq "upload") {
-		$current_bandwidth_ul = $result;
-	} else {
-		$current_bandwidth_dl = $result;
+	my $interface = "";
+	if ($direction eq "download") {
+		$interface = $dl_interfaces[0];
 	}
-
-	return $result;
+	if ($direction eq "upload") {
+		$interface = $ul_interfaces[0];
+	}
+	
+	my @qdiscs = split(/\n/, &run_sys_command("tc -d qdisc"));
+	foreach my $qdisc (@qdiscs) {
+		if ($qdisc =~ / dev $interface .* bandwidth (\d+)(K|M)bit/) {
+			my $bw = $1;
+			my $bw_units = $2;
+			if ($bw_units eq "K") {
+				return $bw;
+			} elsif ($bw_units eq "M") {
+				return $bw * 1000;
+			}
+		}
+	}
 }
 
 # Get the maximum allowed latency for the specified direction when bandwidth usage is significant
@@ -3916,14 +3927,14 @@ sub set_bandwidth {
 		my $errors = "";
 
 		if ($direction eq "upload") {
-			foreach my $interface (keys(%ul_interface_directions)) {
-				$errors .= &set_bandwidth_for_interface($interface, $ul_interface_directions{$interface}, $new_bandwidth);
+			foreach my $interface (@ul_interfaces) {
+				$errors .= &set_bandwidth_for_interface($interface, $new_bandwidth);
 			}
 		}
 
 		if ($direction eq "download") {
-			foreach my $interface (keys(%dl_interface_directions)) {
-				$errors .= &set_bandwidth_for_interface($interface, $dl_interface_directions{$interface}, $new_bandwidth);
+			foreach my $interface (@dl_interfaces) {
+				$errors .= &set_bandwidth_for_interface($interface, $new_bandwidth);
 			}
 		}
 
@@ -3954,51 +3965,14 @@ sub set_bandwidth {
 # Returns any errors, or an empty string if successful
 # Note: the bandwidth must be an integer value in kilobits/s
 sub set_bandwidth_for_interface {
-	my ($interface, $direction_if, $bandwidth) = @_;
+	my ($interface, $bandwidth) = @_;
 
 	my $errors = "";
 
-	# Use ingress/egress terminology in the logs to keep things clear.
-	# However, UCI uses "upload" and "download".
-	my $direction_uci = "";
-	if ($direction_if eq "ingress") {
-		$direction_uci = "download";
-	} elsif ($direction_if eq "egress") {
-		$direction_uci = "upload";
-	} else {
-		return "Bad interface direction specified: $direction_if";
-	}
-
-	# Set the new bandwidth in UCI so that the changes will show up in the
-	# GUI and survive a reboot. Should complete silently.
-
-	my $uci_command = "uci set sqm.$interface.$direction_uci=$bandwidth";
-	if ($debug_bw_changes) { &output(0, "Applying new $direction_if bandwidth $bandwidth Kb/s to $interface: $uci_command"); }
-	my $uci_errors = &run_sys_command($uci_command);
-	chomp($uci_errors);
-
-	# Check whether we had any errors.
-	if ($uci_errors eq "") {
-		# No errors - commit the change
-		&run_sys_command("uci commit");	
-	} else {
-		$errors = $uci_errors;
-		if ($debug_bw_changes) { &output(0, $uci_errors); }
-	} 
-	
-	# Now use tc to change the bandwidth on the fly, without restarting SQM.
+	# Use tc to change the bandwidth on the fly, without restarting SQM.
 	# The tc command should complete silently.
-	
-	# Ingress SQM qdiscs operate on virtual Intermediary Function Block (IFB) interfaces
-	# Which receive ingress packets on their ingress side, and then send them on to
-	# the kernel on their egress side. The SQM instance operates on this egress side.
-	if ($direction_if eq "ingress" && $interface !~ /^ifb4/) {
-		$interface = "ifb4" . $interface;
-		$direction_if = "egress";
-	}		
-
 	my $tc_command = "tc qdisc change root dev $interface cake bandwidth " . $bandwidth . "Kbit";
-	if ($debug_bw_changes) { &output(0, "Applying new $direction_if bandwidth $bandwidth Kb/s to $interface: $tc_command"); }
+	if ($debug_bw_changes) { &output(0, "Applying new bandwidth $bandwidth Kb/s to $interface: $tc_command"); }
 	my $tc_errors .= &run_sys_command($tc_command);
 	chomp($tc_errors);
 
