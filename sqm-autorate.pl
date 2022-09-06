@@ -940,9 +940,11 @@ sub check_config {
 	}
 	
 	foreach my $dl_interface (keys(%dl_interface_directions)) {
-		if ($dl_interface =~ /^ifb4/ && $dl_interface_directions{$dl_interface} eq "ingress") {
-			&output(0, "WARNING: \"ingress\" specified for IFB interface $dl_interface. Correcting to \"egress\"");
-			$dl_interface_directions{$dl_interface} = "egress";
+		if ($dl_interface =~ /^ifb4/) {
+			my $corrected_dl_interface =~ s/^ifb4//g;
+			&output(0, "WARNING: Download IFB interface \"$dl_interface\" specified in config file. Correcting to \"$corrected_dl_interface\" (tc settings will be applied to \"$dl_interface\" automatically).");
+			delete($dl_interface_directions{$dl_interface});
+			$dl_interface_directions{$corrected_dl_interface} = "ingress";
 		}
 	}
 		
@@ -1241,10 +1243,10 @@ sub print_latency_results_summary {
 		$ul_bad_count,
 		$dl_bad_count,
 		$timed_out_count,
-		sprintf("%0.2f", $ul_time_ave), # ul_time_ave
+		sprintf("%0.2f", $ul_time_ave),                                 # ul_time_ave
 		scalar(@valid_pings_ul) != 0 ? max(@valid_pings_ul) : 0,        # ul_time_max
 		sprintf("%0.2f", &get_jitter(@valid_pings_ul)),                 # ul_jitter
-		sprintf("%0.2f", $dl_time_ave), # dl_time_ave
+		sprintf("%0.2f", $dl_time_ave),                                 # dl_time_ave
 		scalar(@valid_pings_dl) != 0 ? max(@valid_pings_dl) : 0,        # dl_time_max
 		sprintf("%0.2f", &get_jitter(@valid_pings_dl)),                 # dl_jitter
 		sprintf("%0.3f", &kbps_to_mbps($ul_bw_ave)),                    # ul_bw_ave
@@ -1771,9 +1773,7 @@ sub create_icmp_socket {
 	return $fd;
 }
 
-
-
-# Send an ICMP timestamp request tp the specified IP address, on the specified socket
+# Send an ICMP timestamp request to the specified IP address, on the specified socket
 # Returns the packet ID and sequence number for the message that was sent
 sub send_icmp_timestamp_request {
 	my ($ip, $fd) = @_;
@@ -3066,8 +3066,6 @@ sub is_struckout {
 	}
 }
 
-
-
 # Returns the current bandwidth for the specified direction (download|upload)
 # The value returned here is the value maintained by this script.
 # Use &get_current_bandwidth_from_uci() to refresh the value from UCI.
@@ -3461,8 +3459,6 @@ sub decrease_if_appropriate {
 
 # Check whether a relaxation is allowed for the specified direction
 # Returns 1 if relaxation is allowed, 0 if not
-# The current time is provided by the caller to ensure that times
-# printed in the log are consistent
 sub is_relax_allowed {
 	my ($direction, $log_if_disallowed) = @_;
 
@@ -3556,7 +3552,7 @@ sub is_increase_allowed {
 #   - The number of seconds (millisecond precision) until a bandwidth
 #     relaxation is allowed for the specified direction
 #   - The length of the delay that we are respecting (could be increase
-#     delay or $relax_delay)
+#     delay for the specified direction, or $relax_delay)
 sub get_time_until_relax_allowed {
 	my ($direction) = @_;
 
@@ -3637,6 +3633,7 @@ sub get_time_until_increase_allowed {
 }
 
 # Adjust the bandwidth by $relax_pc towards the standard bandwidth
+# Returns 1 if bandwidth was relaxed successfully, 0 if not.
 sub relax_bandwidth {
 	my ($direction) = @_;
 
@@ -3703,8 +3700,8 @@ sub relax_bandwidth {
 	}
 }
 
-# Increase the bandwidth for the specified direction, ensuring that we stay
-# within the minimum and maximum limits.
+# Increase the bandwidth for the specified direction, ensuring that we
+# respect the maximum limit.
 # Returns 1 if bandwidth was increased successfully, 0 if not.
 sub increase_bandwidth {
 	my ($direction) = @_;
@@ -3774,8 +3771,9 @@ sub increase_bandwidth {
 	}
 }
 
-# Decrease the bandwidth for the specified direction, ensuring that we stay
-# within the minimum and maximum limits.
+# Decrease the bandwidth for the specified direction, ensuring that we
+# respect the minimum limit.
+# Returns 1 if bandwidth was decreased successfully, 0 if not.
 sub decrease_bandwidth {
 	my ($direction) = @_;
 
