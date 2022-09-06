@@ -20,9 +20,7 @@ Property name                   Default value    Units         Description
 wan_interface                                                  Specifies the interface to use for WAN bandwidth usage measurements
 
 ul_interface.[n]                                               Upload SQM interface names                         e.g. ul_interface.0 = eth0
-ul_interface_direction.[n]                                     Upload SQM interface directions (ingress|egress)   e.g. ul_interface_direction.0 = egress
 dl_interface.[n]                                               Download SQM interface names                       e.g. dl_interface.0 = eth0
-dl_interface_direction.[n]                                     Download SQM interface directions (ingress|egress) e.g. dl_interface_direction.0 = ingress
 
 dl_bw_minimum                                    kilobits/s    Download SQM bandwidth will never be reduced below this value
 dl_bw_standard                                   kilobits/s    Download SQM bandwidth will relax to this value when there is no significant bandwidth usage
