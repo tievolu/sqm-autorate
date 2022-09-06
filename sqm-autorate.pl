@@ -2410,15 +2410,8 @@ sub update_bw_steps {
 		my $average_bad_bw_usage = $bad_bw_usage_total / $bad_ping_count;
 		&set_average_bad_bandwidth_usage($direction, $average_bad_bw_usage);
 
-		# Calculate the new target bandwidth (in bps)
+		# Calculate the new target bandwidth
 		my $target_bandwidth = $average_bad_bw_usage - ($average_bad_bw_usage * ($decrease_overshoot_pc / 100));
-
-		# Check that the target bandwidth is at least 5% lower than the maximum
-		# NOTE: &get_max_bandwidth() returns kbps so we need to convert to bps
-		my $max_target_bandwidth = (&get_max_bandwidth($direction) * 0.95) * 1000;
-		if ($target_bandwidth > $max_target_bandwidth) {
-			$target_bandwidth = $max_target_bandwidth;
-		}
 
 		# Calculate the percentage decrease required to attain the target bandwidth
 		my $decrease_step_pc = ((&get_current_bandwidth($direction) - $target_bandwidth) / &get_current_bandwidth($direction)) * 100;
@@ -3973,13 +3966,12 @@ sub set_bandwidth_for_interface {
 	# The tc command should complete silently.
 	my $tc_command = "tc qdisc change root dev $interface cake bandwidth " . $bandwidth . "Kbit";
 	if ($debug_bw_changes) { &output(0, "Applying new bandwidth $bandwidth Kb/s to $interface: $tc_command"); }
-	my $tc_errors .= &run_sys_command($tc_command);
-	chomp($tc_errors);
+	$errors .= &run_sys_command($tc_command);
+	chomp($errors);
 
 	# Check whether we had any errors.
-	if ($tc_errors ne "") {
-		$errors .= "\n" . $tc_errors;
-		if ($debug_bw_changes) { &output(0, $tc_errors) };
+	if ($errors ne "") {
+		if ($debug_bw_changes) { &output(0, $errors) };
 	}
 
 	return $errors;
