@@ -255,7 +255,6 @@ my $icmp_timeout                   = &get_config_property("icmp_timeout",       
 my $latency_check_interval         = &get_config_property("latency_check_interval",         0.5);
 my $max_recent_results             = &get_config_property("max_recent_results",             20);
 my $bad_ping_pc                    = &get_config_property("bad_ping_pc",                    25);
-my $icmp_offset_samples            = &get_config_property("icmp_offset_samples",            50);
 my $ul_max_loaded_latency          = &get_config_property("ul_max_loaded_latency",          undef);
 my $ul_max_idle_latency            = &get_config_property("ul_max_idle_latency",            $ul_max_loaded_latency);
 my $dl_max_loaded_latency          = &get_config_property("dl_max_loaded_latency",          undef);
@@ -1007,11 +1006,6 @@ sub check_config {
 		$fatal_error = 1;
 	}
 	
-	if ($icmp_offset_samples  < 5) {
-		&output(0, "INIT: ERROR: ICMP offset samples (\"icmp_offset_samples \") must be 5 or greater");
-		$fatal_error = 1;
-	}
-	
 	if ($increase_load_threshold_pc < 0 || $increase_load_threshold_pc > 100) {
 		&output(0, "INIT: ERROR: Increase load threshold percentage (\"increase_load_threshold_pc\") must be between 0 and 100");
 		$fatal_error = 1;
@@ -1067,11 +1061,6 @@ sub check_config {
 		$fatal_error = 1;
 	}
 
-	if ($icmp_offset_samples < 0) {
-		&output(0, "INIT: ERROR: ICMP offset samples (\"icmp_offset_samples\") cannot be negative");
-		$fatal_error = 1;
-	}
-	
 	if ($ul_max_idle_latency < 0) {
 		&output(0, "INIT: ERROR: Maximum idle upload latency (\"ul_max_idle_latency\") cannot be negative");
 		$fatal_error = 1;
