@@ -48,7 +48,6 @@ icmp_timeout                    1                seconds       ICMP timeout
 latency_check_interval          0.5              seconds       Interval between latency checks
 max_recent_results              20                             Maximum number of recent ICMP results to consider when checking latency
 bad_ping_pc                     25               percent       Proportion of bad ICMP results required to trigger a "bad" latency result
-icmp_offset_samples             50                             Number of RTT samples to store (per reflector) to calculate ICMP offsets
 ul_max_idle_latency                              milliseconds  Maximum upload latency time with no bandwidth usage - see reflector_strikeout_threshold
 ul_max_loaded_latency                            milliseconds  Maximum upload latency time with significant bandwidth usage
 dl_max_idle_latency                              milliseconds  Maximum download latency time with no bandwidth usage - see reflector_strikeout_threshold
