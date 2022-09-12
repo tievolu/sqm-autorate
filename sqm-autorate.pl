@@ -1250,6 +1250,11 @@ sub print_latency_results_summary {
 		return;
 	}
 	
+	if (!defined($valid_pings_ul_ref) || !defined($valid_pings_dl_ref)) {
+		&output(0, "LATENCY SUMMARY: No valid results!");
+		return;
+	}
+	
 	my @valid_pings_ul = @{$valid_pings_ul_ref};
 	my @valid_pings_dl = @{$valid_pings_dl_ref};
 	
