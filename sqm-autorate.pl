@@ -208,12 +208,20 @@ my %reflector_seqs         :shared;    # Current sequence ID for each ICMP refle
 my %reflector_offsets      :shared;    # Time offset for each ICMP reflector
 my %reflector_minimum_rtts :shared;    # Minimum RTT time seen for each ICMP reflector (used when calculating the offset)
 
+# Initialise the process ID and cycle ID
+$pid = "$$";
+$cid = sprintf("%010d", 0);
+
 #######################################################################################
 # Configuration
 #######################################################################################
 
 # Read the configuration properties file and use them to populate global variables
-my $config_file = "sqm-autorate.conf";
+# Configuration file can be located in the same directory as the script, or /etc
+my $config_file = substr($0, 0, rindex($0, "/")) . "/sqm-autorate.conf";
+if (! -e $config_file) {
+	$config_file = "/etc/sqm-autorate.conf";
+}
 my %config_properties = &get_config_properties($config_file);
 
 # Upload interfaces
@@ -385,14 +393,6 @@ my $struckout_count = 0;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
-
-# Initialise the process ID and cycle ID
-{
-	lock($pid);
-	lock($cid);
-	$pid = "$$";
-	$cid = sprintf("%010d", 0);
-}
 
 # Process command line arguments
 &process_args();
