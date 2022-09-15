@@ -145,6 +145,13 @@ use strict;
 use warnings;
 
 #######################################################################################
+# Signal handlers
+#######################################################################################
+
+$SIG{INT}  = \&signal_handler;
+$SIG{TERM} = \&signal_handler;
+
+#######################################################################################
 # Modules
 #######################################################################################
 
@@ -814,11 +821,10 @@ sub are_icmp_threads_suspended {
 # Error handlers
 #######################################################################################
 
-$SIG{INT}  = \&signal_handler;
-$SIG{TERM} = \&signal_handler;
-
 sub signal_handler {
 	&output(0, "Caught signal: $!");
+	&output(0, "Suspending ICMP threads\n");
+	suspend_icmp_threads();
 	&finish();
 }
 
