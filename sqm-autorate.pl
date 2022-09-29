@@ -200,6 +200,10 @@ my $suspend_icmp_receiver  :shared;    # Tells the ICMP Receiver thread to suspe
 my $sender_suspended       :shared;    # Indicates that the ICMP Sender thread is suspended
 my $receiver_suspended     :shared;    # Indicates that the ICMP Receiver thread is suspended
 my $icmp_interval          :shared;    # ICMP interval
+my $icmp_request_count     :shared;
+my $icmp_request_bytes     :shared;
+my $icmp_response_count    :shared;
+my $icmp_response_bytes    :shared;    
 my %icmp_timeout_times     :shared;    # Time at which a pending ICMP request will time out
 my %icmp_sent_times        :shared;    # Time at which an ICMP request was sent
 my @recent_results         :shared;    # Recent ICMP results
@@ -448,7 +452,7 @@ my $receiver_thread = &create_receiver_thread($fd);
 &output(0, "INIT: Created ICMP Receiver thread: " . $receiver_thread->tid);
 
 # Create the ICMP Sender thread
-my $sender_thread = &create_sender_thread($icmp_interval, $fd);
+my $sender_thread = &create_sender_thread($fd);
 &output(0, "INIT: Created ICMP Sender thread: " . $sender_thread->tid);
 
 # Get the current bandwidth values from tc
@@ -547,7 +551,7 @@ while (1) {
 
 # Thread to send ICMP timestamp requests
 sub create_sender_thread {
-	my ($icmp_interval, $fd) = @_;
+	my ($fd) = @_;
 
 	return threads->create(sub {
 		my $thr_id = threads->self->tid;
@@ -1413,6 +1417,22 @@ sub print_status_summary {
 		(&get_current_bandwidth("download")/1000) * ($relax_load_threshold_pc / 100)
 	);
 
+	my $icmp_summary = "";
+	
+	{
+		lock($icmp_response_count);
+		lock($icmp_response_bytes);
+		$icmp_summary .= sprintf(
+			"ICMP - requests: %d (%s MB), responses: %d (%s MB), loaded/idle interval = %ss/%s",
+			$icmp_request_count,
+			sprintf("%.2f", $icmp_request_bytes / 1048576),
+			$icmp_response_count,
+			sprintf("%.2f", $icmp_response_bytes / 1048576),
+			$icmp_interval_loaded,
+			$icmp_interval_idle == 0 ? "inf" : $icmp_interval_idle . "s",
+		);
+	}
+
 	# Only print the reflector summary if strikes are enabled
 	if ($reflector_strikeout_threshold != 0) {
 		my $reflector_summary = sprintf(
@@ -1424,9 +1444,9 @@ sub print_status_summary {
 			scalar(@reflector_pool),
 			$initial_reflector_pool_size
 		);		
-		&output(0, "$threshold_summary\n$reflector_summary");
+		&output(0, "$threshold_summary\n$icmp_summary\n$reflector_summary");
 	} else {
-		&output(0, "$threshold_summary");
+		&output(0, "$threshold_summary\n$icmp_summary");
 	}
 	
 	&print_log_line_separator_if_necessary();
@@ -1951,6 +1971,14 @@ sub send_icmp_timestamp_request {
 		);
 	}
 
+	# Update counters
+	{
+		lock($icmp_request_count);
+		lock($icmp_request_bytes);
+		$icmp_request_count++;
+		$icmp_request_bytes += 20;
+	}
+
 	# Return the ID and sequence number
 	return ($id, $seq);
 }
@@ -2058,6 +2086,14 @@ sub handle_icmp_reply {
 			if (scalar(@recent_results) > $max_recent_results) {
 				shift(@recent_results);
 			}
+		}
+		
+		# Update counters
+		{
+			lock($icmp_response_count);
+			lock($icmp_response_bytes);
+			$icmp_response_count++;
+			$icmp_response_bytes += 20;
 		}
 	}
 	
