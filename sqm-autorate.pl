@@ -199,6 +199,7 @@ my $suspend_icmp_sender    :shared;    # Tells the ICMP Sender thread to suspend
 my $suspend_icmp_receiver  :shared;    # Tells the ICMP Receiver thread to suspend/resume itself
 my $sender_suspended       :shared;    # Indicates that the ICMP Sender thread is suspended
 my $receiver_suspended     :shared;    # Indicates that the ICMP Receiver thread is suspended
+my $icmp_interval          :shared;    # ICMP interval
 my %icmp_timeout_times     :shared;    # Time at which a pending ICMP request will time out
 my %icmp_sent_times        :shared;    # Time at which an ICMP request was sent
 my @recent_results         :shared;    # Recent ICMP results
@@ -265,7 +266,9 @@ my $decrease_overshoot_pc          = &get_config_property("decrease_overshoot_pc
 my $relax_pc                       = &get_config_property("relax_pc",                       5);
 my $relax_load_threshold_pc        = &get_config_property("relax_load_threshold_pc",        50);
 my $relax_delay                    = &get_config_property("relax_delay",                    60);
-my $icmp_interval                  = &get_config_property("icmp_interval",                  0.1);
+my $icmp_adaptive                  = &get_config_property("icmp_adaptive",                  1);
+my $icmp_interval_idle             = &get_config_property("icmp_interval_idle",             1);
+my $icmp_interval_loaded           = &get_config_property("icmp_interval_loaded",           &get_config_property("icmp_interval", 0.1));
 my $icmp_timeout                   = &get_config_property("icmp_timeout",                   1);
 my $latency_check_interval         = &get_config_property("latency_check_interval",         0.5);
 my $max_recent_results             = &get_config_property("max_recent_results",             20);
@@ -283,7 +286,7 @@ my $reflector_strike_ttl           = &get_config_property("reflector_strike_ttl"
 my $tmp_folder                     = &get_config_property("tmp_folder",                     "/tmp");
 my $log_file                       = &get_config_property("log_file",                       undef);
 my $use_syslog                     = &get_config_property("use_syslog",                     1);
-my $latency_check_summary_interval = &get_config_property("latency_check_summary_interval", 2);
+my $latency_check_summary_interval = &get_config_property("latency_check_summary_interval", "auto");
 my $status_summary_interval        = &get_config_property("status_summary_interval",        60);
 my $log_bw_changes                 = &get_config_property("log_bw_changes",                 1);
 my $log_details_on_bw_changes      = &get_config_property("log_details_on_bw_changes",      1);
@@ -293,6 +296,7 @@ my $debug_icmp                     = &get_config_property("debug_icmp",         
 my $debug_icmp_timeout             = &get_config_property("debug_icmp_timeout",             0);
 my $debug_icmp_correction          = &get_config_property("debug_icmp_correction",          0);
 my $debug_icmp_suspend             = &get_config_property("debug_icmp_suspend",             0);
+my $debug_icmp_adaptive            = &get_config_property("debug_icmp_adaptive",            0);
 my $debug_strike                   = &get_config_property("debug_strike",                   0);
 my $debug_latency_check            = &get_config_property("debug_latency_check",            0);
 my $debug_sys_commands             = &get_config_property("debug_sys_commands",             0);
@@ -334,7 +338,12 @@ my $max_bad_pings = &round($max_recent_results * ($bad_ping_pc / 100)) - 1;
 # There's no performance impact here because we always search for a matching bandwidth
 # sample period starting with the most recent result. Redundant samples at the other
 # end of the array have no impact beyond a *tiny* increase in memory usage.
-my $max_recent_bandwidth_usages = &round_up( ((($icmp_interval * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
+my $max_recent_bandwidth_usages;
+if ($icmp_interval_idle > 0) {
+	$max_recent_bandwidth_usages = &round_up( ((($icmp_interval_idle * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
+} else {
+	$max_recent_bandwidth_usages = &round_up( ((($icmp_interval_loaded * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
+}
 
 # Create an array to store the recent bandwidth usage statistics, and initialise it
 my @recent_bandwidth_usages = ();
@@ -421,6 +430,14 @@ my $initial_reflector_pool_size = scalar(@reflector_pool);
 
 # Check the configuration
 &check_config();
+
+# Set the ICMP interval - default to / start with the "loaded" interval
+$icmp_interval = $icmp_interval_loaded;
+
+# If necessary, set the latency check summary interval
+if ($latency_check_summary_interval eq "auto") {
+	$latency_check_summary_interval = $max_recent_results * $icmp_interval;
+}
 
 # Create a socket on which to send the ping requests
 my $fd = &create_icmp_socket();
@@ -1042,8 +1059,13 @@ sub check_config {
 		$fatal_error = 1;
 	}
 
-	if ($icmp_interval <= 0) {
-		&output(0, "INIT: ERROR: ICMP interval (\"icmp_interval\") must be greater than 0");
+	if ($icmp_interval_idle < 0) {
+		&output(0, "INIT: ERROR: ICMP interval (\"icmp_interval_idle\") cannot be less than 0");
+		$fatal_error = 1;
+	}
+	
+	if ($icmp_interval_loaded <= 0) {
+		&output(0, "INIT: ERROR: ICMP interval (\"icmp_interval_loaded\") must be greater than 0");
 		$fatal_error = 1;
 	}
 	
@@ -1057,7 +1079,7 @@ sub check_config {
 		$fatal_error = 1;
 	}
 
-	if ($latency_check_summary_interval < 0) {
+	if ($latency_check_summary_interval ne "auto" && $latency_check_summary_interval < 0) {
 		&output(0, "INIT: ERROR: Latency check summary interval (\"latency_check_summary_interval\") cannot be negative");
 		$fatal_error = 1;
 	}
@@ -1252,7 +1274,11 @@ sub print_latency_results_summary {
 	) = @_;
 	
 	if (!defined($total_results) || $total_results == 0) {
-		&output(0, "LATENCY SUMMARY: No results!");
+		&output(0, sprintf(
+			"LATENCY SUMMARY: count=0 ul_bad=0 dl_bad=0 timed_out=0 ul_ave=0 ul_max=0 ul_jit=0 dl_ave=0 dl_max=0 dl_jit=0 ul_bw_ave=%-7s dl_bw_ave=%-7s",
+			sprintf("%0.3f", &kbps_to_mbps($ul_bw_ave)),                    # ul_bw_ave
+			sprintf("%0.3f", &kbps_to_mbps($dl_bw_ave))                     # dl_bw_ave
+		));
 		return;
 	}
 	
@@ -1464,6 +1490,89 @@ sub check_latency {
 
 	# Update the bandwidth usage statistics
 	&update_bandwidth_usage_stats(&get_wan_bytes());
+	
+	# Adaptive ICMP
+	#
+	# If the connection is idle, the ICMP interval is set to $icmp_interval_idle, or pings are suspended
+	# completely if $icmp_interval_idle == 0.
+	# The latency check summary interval is set automatically if $latency_check_summary_interval == "auto".
+	#
+	# If the connection is loaded, the ICMP interval is set to $icmp_interval_loaded.
+	if ($icmp_adaptive) {
+		if (&is_connection_idle()) {
+			if ($icmp_interval_idle == 0) {
+				# Suspend ICMP threads if they're not already suspended, and return LATENCY_OK
+				if (!&are_icmp_threads_suspended()) {
+					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - suspending ICMP threads"); }
+					&suspend_icmp_threads();
+					&clear_latency_results();
+					
+					# If necessary, set the latency check summary interval
+					# TODO: is there a way to calculate a sensible interval here instead of hard-coding it?
+					if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
+						$latency_check_summary_interval = 20;
+					}
+				}
+				
+				# set the average bandwidth so that relaxation checks function correctly
+				my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
+				&set_average_bandwidth_usage("upload", $ul_bw_ave);
+				&set_average_bandwidth_usage("download", $dl_bw_ave);
+				
+				# Return summary results containing only average bandwidth usage
+				my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
+				return (LATENCY_OK, \@summary_results, \());
+			} elsif ($icmp_interval != $icmp_interval_idle) {
+				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - setting ICMP interval to $icmp_interval_idle" . "s"); }
+				
+				# Set idle ICMP interval and carry on as normal
+				lock ($icmp_interval);
+				$icmp_interval = $icmp_interval_idle;
+				
+				# If necessary, set the latency check summary interval
+				if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
+					$latency_check_summary_interval = $max_recent_results * $icmp_interval;
+				}
+				
+				# Fall through to continue with latency check
+			}
+		} elsif ($icmp_interval_idle == 0 && &are_icmp_threads_suspended()) {
+			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - resuming ICMP threads"); }
+			
+			# Resume ICMP threads
+			&resume_icmp_threads();
+			
+			# If necessary, set the latency check summary interval and force a summary on this cycle
+			if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
+				$latency_check_summary_interval = $max_recent_results * $icmp_interval;
+				$next_latency_check_summary_time = gettimeofday();
+			}
+			
+			# Set the average bandwidth so that relaxation checks function correctly
+			my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
+			&set_average_bandwidth_usage("upload", $ul_bw_ave);
+			&set_average_bandwidth_usage("download", $dl_bw_ave);
+			
+			# We have no results yet, so return LATENCY_OK for now, along with
+			# summary results containing only average bandwidth usage
+			my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
+			return (LATENCY_OK, \@summary_results, \());
+		} elsif ($icmp_interval == $icmp_interval_idle) {
+			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - setting ICMP interval to $icmp_interval_loaded" . "s"); }
+			
+			# Set loaded ICMP interval and carry on as normal
+			lock ($icmp_interval);
+			$icmp_interval = $icmp_interval_loaded;
+			
+			# If necessary, set the latency check summary interval and force a summary on this cycle
+			if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
+				$latency_check_summary_interval = $max_recent_results * $icmp_interval;
+				$next_latency_check_summary_time = gettimeofday();
+			}
+			
+			# Fall through to continue with latency check
+		}
+	}
 
 	if (scalar(@recent_results_copy) == 0) {
 		# No results yet, so we can't assess latency
@@ -2554,10 +2663,10 @@ sub run_sys_command {
 	
 	# The sender and receiver threads need to be blocked at safe points
 	# before we fork, otherwise we can deadlock.
-	my $need_to_resume_threads = 0;
+	my $need_to_resume_icmp_threads = 0;
 	if (!&are_icmp_threads_suspended()) {
 		&suspend_icmp_threads();
-		$need_to_resume_threads = 1;
+		$need_to_resume_icmp_threads = 1;
 	}
 	
 	if ($debug_sys_commands) { &output(0, "SYSCOMMAND DEBUG: Running system command: \"$command\""); }
@@ -2567,7 +2676,7 @@ sub run_sys_command {
 		
 	if ($debug_sys_commands) { &output(0, "SYSCOMMAND DEBUG: System command result: \"$result\""); }
 	
-	if ($need_to_resume_threads) {
+	if ($need_to_resume_icmp_threads) {
 		&resume_icmp_threads();
 	}
 	
@@ -2829,6 +2938,50 @@ sub get_bandwidth_usage_at {
 	# This should never happen. If it does we have a problem with how we're calculating $max_recent_bandwidth_usages.
 	my ($earliest_start_time, undef, undef, undef) = @{$recent_bandwidth_usages[scalar(@recent_bandwidth_usages) - 1]};
 	&fatal_error("Failed to get $direction bandwidth at ". &format_time($time) . ". Earliest of " . scalar(@recent_bandwidth_usages) . " (max $max_recent_bandwidth_usages) bandwidth samples' start time = " . &format_time($earliest_start_time));
+}
+
+# Check whether the connection is idle in both directions
+# Returns 1 if idle, 0 if loaded
+sub is_connection_idle {
+	my $bw_usage_ul;
+	my $bw_usage_dl;
+	
+	foreach my $bw_usage_ref (@recent_bandwidth_usages) {
+		(undef, undef, $bw_usage_ul, $bw_usage_dl, undef, undef) = @{$bw_usage_ref};
+		if (defined($bw_usage_ul) && defined($bw_usage_dl)) {
+			if ($bw_usage_ul >= $ul_bw_idle_threshold || $bw_usage_dl >= $dl_bw_idle_threshold) {
+				return 0;
+			}
+		}
+	}
+	
+	# If we reach here, none of the bandwidth samples indicates a loaded connection
+	return 1;
+}
+
+# Get the average bandwidth usage (kilobits/s) for both directions since the last latency summary
+sub get_average_bandwidth_usage_since_last_latency_summary {
+	my $start_time;
+	my $bw_usage_ul;
+	my $bw_usage_dl;
+	
+	my $bw_usage_ul_total = 0;
+	my $bw_usage_dl_total = 0;	
+	my $current_time = gettimeofday();
+
+	foreach my $bw_usage_ref (@recent_bandwidth_usages) {
+		($start_time, undef, $bw_usage_ul, $bw_usage_dl, undef, undef) = @{$bw_usage_ref};
+		if (defined($bw_usage_ul) && defined($bw_usage_dl)) {
+			if ($start_time > $current_time - $latency_check_summary_interval) {
+				$bw_usage_ul_total += $bw_usage_ul;
+				$bw_usage_dl_total += $bw_usage_dl;
+			} else {
+				last;
+			}
+		}
+	}
+	
+	return ($bw_usage_ul_total / scalar(@recent_bandwidth_usages), $bw_usage_dl_total / scalar(@recent_bandwidth_usages));
 }
 
 # Get the reflector pool from the specified CSV file.
@@ -3496,16 +3649,17 @@ sub is_relax_allowed {
 	# Don't relax if we haven't had at least a full set of pings since the last bandwidth
 	# change. This ensures that our decision is based on an average bandwidth usage over
 	# at least $max_recent_results samples.
-	# TODO: This is redundant because &is_increase_allowed() already checks this
-	#       but we definitely want to make sure this happens when checking relax steps
-	#       so I'm leaving it here for now.
-	my $results_count;
-	{
-		lock(@recent_results);
-		$results_count = scalar(@recent_results);
-	}
-	if ($results_count < $max_recent_results) {
-		return 0;
+	# If the ICMP threads are suspended it means adaptive ICMP is enabled and the
+	# connection is idle, so we're not going to have any recent results => skip this check.
+	if (!&are_icmp_threads_suspended()) {
+		my $results_count;
+		{
+			lock(@recent_results);
+			$results_count = scalar(@recent_results);
+		}
+		if ($results_count < $max_recent_results) {
+			return 0;
+		}
 	}
 
 	# No reason to disallow a relaxation step
@@ -3540,12 +3694,16 @@ sub is_increase_allowed {
 			);
 		}
 		return 0;
-	} elsif ($results_count < $max_recent_results) {
-		# We haven't seen enough good pings yet
-		return 0;
-	} elsif (&get_increase_step_pc($direction) == 0) {
-		# Increase step is set to 0, which means not all recent pings were good.
-		return 0;
+	} elsif (!&are_icmp_threads_suspended()) {
+		# If the ICMP threads are suspended it means adaptive ICMP is enabled and the
+		# connection is idle, so we don't need to perform these checks
+		if ($results_count < $max_recent_results) {
+			# We haven't seen enough good pings yet
+			return 0;
+		} elsif (&get_increase_step_pc($direction) == 0) {
+			# Increase step is set to 0, which means not all recent pings were good.
+			return 0;
+		}
 	}
 
 	# If we reach here there's no reason to prevent an increase
@@ -3641,7 +3799,11 @@ sub get_time_until_increase_allowed {
 sub relax_bandwidth {
 	my ($direction) = @_;
 
-	&suspend_icmp_threads();
+	my $need_to_resume_icmp_threads = 0;
+	if (!&are_icmp_threads_suspended()) {
+		&suspend_icmp_threads();
+		$need_to_resume_icmp_threads = 1;
+	}
 
 	my $std_bw = &get_std_bandwidth($direction);
 	my $current_bw = &get_current_bandwidth($direction);
@@ -3696,10 +3858,14 @@ sub relax_bandwidth {
 			}
 		}
 		
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 1;
 	} else {
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 0;
 	}
 }
@@ -3710,7 +3876,11 @@ sub relax_bandwidth {
 sub increase_bandwidth {
 	my ($direction) = @_;
 	
-	&suspend_icmp_threads();
+	my $need_to_resume_icmp_threads = 0;
+	if (!&are_icmp_threads_suspended()) {
+		&suspend_icmp_threads();
+		$need_to_resume_icmp_threads = 1;
+	}
 
 	my $output_string .= "Increasing $direction bandwidth ";
 
@@ -3718,7 +3888,9 @@ sub increase_bandwidth {
 	my $increase_pc = &get_increase_step_pc($direction);
 	if ($increase_pc <= 0) {
 		&output(1, "WARNING: Invalid increase percentage step: " . $increase_pc . "%", 1);
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 0;
 	}
 
@@ -3767,10 +3939,14 @@ sub increase_bandwidth {
 			}
 		}
 		
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 1;
 	} else {
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 0;
 	}
 }
@@ -3781,7 +3957,11 @@ sub increase_bandwidth {
 sub decrease_bandwidth {
 	my ($direction) = @_;
 
-	&suspend_icmp_threads();
+	my $need_to_resume_icmp_threads = 0;
+	if (!&are_icmp_threads_suspended()) {
+		&suspend_icmp_threads();
+		$need_to_resume_icmp_threads = 1;
+	}
 
 	my $output_string .= "Decreasing $direction bandwidth ";
 
@@ -3789,7 +3969,9 @@ sub decrease_bandwidth {
 	my $decrease_pc = &get_decrease_step_pc($direction);
 	if ($decrease_pc <= 0) {
 		&output(1, "WARNING: Invalid decrease percentage step: " . $decrease_pc . "%", 1);
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 0;
 	}
 
@@ -3835,10 +4017,14 @@ sub decrease_bandwidth {
 			}
 		}
 		
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 1;
 	} else {
-		&resume_icmp_threads();
+		if ($need_to_resume_icmp_threads) {
+			&resume_icmp_threads();
+		}
 		return 0;
 	}
 }
@@ -3851,7 +4037,11 @@ sub reset_bandwidth {
 		&check_direction($direction);
 	}
 
-	&suspend_icmp_threads();
+	my $need_to_resume_icmp_threads = 0;
+	if (!&are_icmp_threads_suspended()) {
+		&suspend_icmp_threads();
+		$need_to_resume_icmp_threads = 1;
+	}
 
 	my $std_bandwidth_dl = &get_std_bandwidth("download");
 	my $std_bandwidth_ul = &get_std_bandwidth("upload");
@@ -3878,7 +4068,9 @@ sub reset_bandwidth {
 		}
 	}
 	
-	&resume_icmp_threads();
+	if ($need_to_resume_icmp_threads) {
+		&resume_icmp_threads();
+	}
 }
 
 # Apply the specified bandwidth to the specified direction (download|upload).
