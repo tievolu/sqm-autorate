@@ -43,7 +43,9 @@ relax_pc                        5                percent       Percentage by whi
 relax_load_threshold            50               percent       Do not relax bandwidth if more than this proportion of the current bandwidth is being used
 relax_delay                     60               seconds       Do not relax bandwidth for at least this many seconds after any bandwidth change (including previous relax steps)
 
-icmp_interval                   0.1              seconds       Interval between ICMP requests
+icmp_adaptive                   1                boolean       If icmp_adaptive = 1 the ICMP interval will be set to icmp_interval_loaded or icmp_interval_idle according to connection load
+icmp_interval_loaded            0.1              seconds       Interval between ICMP requests when connection is loaded (or if icmp_adaptive = 0)
+icmp_interval_idle              1                seconds       Interval between ICMP requests when connection is idle
 icmp_timeout                    1                seconds       ICMP timeout
 latency_check_interval          0.5              seconds       Interval between latency checks
 max_recent_results              20                             Maximum number of recent ICMP results to consider when checking latency
@@ -62,7 +64,7 @@ tmp_folder                      /tmp                           Location for temp
 
 log_file                                                       Log file path/name. If this is not set, logging to a file will be disabled. Note: Log rotation must be handled separately (e.g. with logrotate)
 use_syslog                      1                boolean       If use_syslog == 1, important messages will be sent to the syslog
-latency_check_summary_interval  2                seconds       Interval between summary latency check results output. 0 disables.
+latency_check_summary_interval  auto             seconds       Interval between summary latency check results output. "auto" sets this to $max_recent_results * $icmp_interval_[idle|loaded].
 status_summary_interval         60               seconds       Interval between status summaries. 0 disables.
 log_bw_changes                  1                boolean       Print information on bandwidth changes to the log. Automatically enabled if debug_bw_changes=1.
 log_details_on_bw_changes       1                boolean       When a bandwidth change occurs, print the latency results that triggered it. Automatically enabled if debug_bw_changes=1.
@@ -71,6 +73,7 @@ debug_icmp                      0                boolean       Log debug informa
 debug_icmp_timeout              0                boolean       Log debug information for ICMP requests that time out
 debug_icmp_correction           0                boolean       Log debug information when attempting to correct unusual ICMP timestamps. Automatically enabled if debug_icmp=1.
 debug_icmp_suspend              0                boolean       Log debug information when suspending and resuming the ICMP threads
+debug_icmp_adaptive             0                boolean       Log debug information when modifying the ICMP interval in response to connection load
 debug_strike                    0                boolean       Log debug information for getting/setting/checking reflector strikes
 debug_latency_check             0                boolean       Log debug information for every latency check
 debug_sys_commands              0                boolean       Log debug information when running system commands
