@@ -45,7 +45,7 @@ relax_delay                     60               seconds       Do not relax band
 
 icmp_adaptive                   1                boolean       If icmp_adaptive = 1 the ICMP interval will be set to icmp_interval_loaded or icmp_interval_idle according to connection load
 icmp_interval_loaded            0.1              seconds       Interval between ICMP requests when connection is loaded (or if icmp_adaptive = 0)
-icmp_interval_idle              1                seconds       Interval between ICMP requests when connection is idle
+icmp_interval_idle              1                seconds       Interval between ICMP requests when connection is idle. icmp_interval_idle = 0 will disable pings completely when the connection is idle.
 icmp_timeout                    1                seconds       ICMP timeout
 latency_check_interval          0.5              seconds       Interval between latency checks
 max_recent_results              20                             Maximum number of recent ICMP results to consider when checking latency
