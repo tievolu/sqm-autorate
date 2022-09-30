@@ -291,7 +291,7 @@ my $tmp_folder                     = &get_config_property("tmp_folder",         
 my $log_file                       = &get_config_property("log_file",                       undef);
 my $use_syslog                     = &get_config_property("use_syslog",                     1);
 my $latency_check_summary_interval = &get_config_property("latency_check_summary_interval", "auto");
-my $status_summary_interval        = &get_config_property("status_summary_interval",        60);
+my $status_summary_interval        = &get_config_property("status_summary_interval",        "auto");
 my $log_bw_changes                 = &get_config_property("log_bw_changes",                 1);
 my $log_details_on_bw_changes      = &get_config_property("log_details_on_bw_changes",      1);
 
@@ -396,6 +396,7 @@ my $last_log_line_was_separator = 0;
 my $force_status_summary = 1;
 my $next_status_summary_time = gettimeofday();
 my $next_latency_check_summary_time = gettimeofday();
+my $status_summary_auto_frequency = 30;  # i.e. one status summary for every 20 latency summaries
 
 # Number of reflectors that have been struckout
 my $struckout_count = 0;
@@ -441,6 +442,11 @@ $icmp_interval = $icmp_interval_loaded;
 # If necessary, set the latency check summary interval
 if ($latency_check_summary_interval eq "auto") {
 	$latency_check_summary_interval = $max_recent_results * $icmp_interval;
+}
+
+# If necessary, set the status summary interval
+if ($status_summary_interval eq "auto") {
+	$status_summary_interval = $latency_check_summary_interval * 30;
 }
 
 # Create a socket on which to send the ping requests
@@ -1452,6 +1458,32 @@ sub print_status_summary {
 	&print_log_line_separator_if_necessary();
 }
 
+# Update the latency check and status summary intervals if they are configured to
+# be updated automatically. Ensure that the next summaries are printed at the
+# correct times.
+sub update_auto_summary_intervals {
+	# Latency check summary
+	if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
+		my $previous_latency_check_summary_time = $next_latency_check_summary_time - $latency_check_summary_interval;
+		if ($icmp_interval_idle == 0 && &are_icmp_threads_suspended()) {
+			# TODO: is there a way to calculate a sensible interval here instead of hard-coding it?
+			$latency_check_summary_interval = 20;
+		} else {
+			$latency_check_summary_interval = $max_recent_results * $icmp_interval;
+		}
+		$next_latency_check_summary_time = $previous_latency_check_summary_time + $latency_check_summary_interval;
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Latency check summary interval set to " . $latency_check_summary_interval . "s, next summary at " . &format_time($next_latency_check_summary_time)); }
+	}
+
+	# Status summary
+	if (&get_config_property("status_summary_interval", "auto") eq "auto") {
+		my $previous_status_summary_time = $next_status_summary_time - $status_summary_interval;
+		$status_summary_interval = $latency_check_summary_interval * $status_summary_auto_frequency;
+		$next_status_summary_time = $previous_status_summary_time + $status_summary_interval;
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Status summary interval set to " . $status_summary_interval . "s, next summary at " . &format_time($next_status_summary_time)); }
+	}
+}
+
 # Print a log line separator if the last thing we printed was not a log line separator.
 # We use this to avoid printing two separators in a row.
 sub print_log_line_separator_if_necessary {
@@ -1515,7 +1547,6 @@ sub check_latency {
 	#
 	# If the connection is idle, the ICMP interval is set to $icmp_interval_idle, or pings are suspended
 	# completely if $icmp_interval_idle == 0.
-	# The latency check summary interval is set automatically if $latency_check_summary_interval == "auto".
 	#
 	# If the connection is loaded, the ICMP interval is set to $icmp_interval_loaded.
 	if ($icmp_adaptive) {
@@ -1524,14 +1555,10 @@ sub check_latency {
 				# Suspend ICMP threads if they're not already suspended, and return LATENCY_OK
 				if (!&are_icmp_threads_suspended()) {
 					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - suspending ICMP threads"); }
+					
 					&suspend_icmp_threads();
 					&clear_latency_results();
-					
-					# If necessary, set the latency check summary interval
-					# TODO: is there a way to calculate a sensible interval here instead of hard-coding it?
-					if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
-						$latency_check_summary_interval = 20;
-					}
+					&update_auto_summary_intervals();
 				}
 				
 				# set the average bandwidth so that relaxation checks function correctly
@@ -1545,28 +1572,18 @@ sub check_latency {
 			} elsif ($icmp_interval != $icmp_interval_idle) {
 				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - setting ICMP interval to $icmp_interval_idle" . "s"); }
 				
-				# Set idle ICMP interval and carry on as normal
 				lock ($icmp_interval);
 				$icmp_interval = $icmp_interval_idle;
 				
-				# If necessary, set the latency check summary interval
-				if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
-					$latency_check_summary_interval = $max_recent_results * $icmp_interval;
-				}
+				&update_auto_summary_intervals();
 				
 				# Fall through to continue with latency check
 			}
 		} elsif ($icmp_interval_idle == 0 && &are_icmp_threads_suspended()) {
 			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - resuming ICMP threads"); }
 			
-			# Resume ICMP threads
 			&resume_icmp_threads();
-			
-			# If necessary, set the latency check summary interval and force a summary on this cycle
-			if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
-				$latency_check_summary_interval = $max_recent_results * $icmp_interval;
-				$next_latency_check_summary_time = gettimeofday();
-			}
+			&update_auto_summary_intervals();
 			
 			# Set the average bandwidth so that relaxation checks function correctly
 			my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
@@ -1580,15 +1597,10 @@ sub check_latency {
 		} elsif ($icmp_interval == $icmp_interval_idle) {
 			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - setting ICMP interval to $icmp_interval_loaded" . "s"); }
 			
-			# Set loaded ICMP interval and carry on as normal
 			lock ($icmp_interval);
 			$icmp_interval = $icmp_interval_loaded;
 			
-			# If necessary, set the latency check summary interval and force a summary on this cycle
-			if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
-				$latency_check_summary_interval = $max_recent_results * $icmp_interval;
-				$next_latency_check_summary_time = gettimeofday();
-			}
+			&update_auto_summary_intervals();
 			
 			# Fall through to continue with latency check
 		}
