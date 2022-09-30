@@ -3020,21 +3020,23 @@ sub is_connection_idle {
 	foreach my $bw_usage_ref (@recent_bandwidth_usages) {
 		($start_time, $end_time, $bw_usage_ul, $bw_usage_dl, undef, undef) = @{$bw_usage_ref};
 		
-		if (defined($start_time) && $end_time > $min_time) {
-			if ($bw_usage_ul >= $ul_bw_idle_threshold || $bw_usage_dl >= $dl_bw_idle_threshold) {
-				# This sample indicates a loaded connection
-				return 0;
+		if (defined($start_time)) {  # Ensures this is a valid sample, not the first "dummy" sample
+			if ($end_time > $min_time) {
+				if ($bw_usage_ul >= $ul_bw_idle_threshold || $bw_usage_dl >= $dl_bw_idle_threshold) {
+					# This sample indicates a loaded connection
+					return 0;
+				}
+			} else {
+				# If we reach here we've searched back as far as $icmp_adaptive_idle_delay
+				# and found no samples that indicate a loaded connection
+				return 1;
 			}
-		} else {
-			# If we reach here we've searched back as far as $icmp_adaptive_idle_delay
-			# and found no samples that indicate a loaded connection
-			return 1;
 		}
 	}
 	
-	# If we reach here we searched all of the bandwidth samples and none
-	# of them indicate a loaded connection
-	return 1;
+	# If we reach here we ran out of samples before we could determine whether the
+	# connection has been idle for $icmp_adaptive_idle_delay
+	return 0;
 }
 
 # Get the average bandwidth usage (kilobits/s) for both directions since the last latency summary
