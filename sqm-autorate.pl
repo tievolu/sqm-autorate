@@ -271,6 +271,7 @@ my $relax_pc                       = &get_config_property("relax_pc",           
 my $relax_load_threshold_pc        = &get_config_property("relax_load_threshold_pc",        50);
 my $relax_delay                    = &get_config_property("relax_delay",                    60);
 my $icmp_adaptive                  = &get_config_property("icmp_adaptive",                  1);
+my $icmp_adaptive_idle_delay       = &get_config_property("icmp_adaptive_idle_delay",       10);
 my $icmp_interval_idle             = &get_config_property("icmp_interval_idle",             1);
 my $icmp_interval_loaded           = &get_config_property("icmp_interval_loaded",           &get_config_property("icmp_interval", 0.1));
 my $icmp_timeout                   = &get_config_property("icmp_timeout",                   1);
@@ -337,17 +338,19 @@ my $reset = 0;
 my $max_bad_pings = &round($max_recent_results * ($bad_ping_pc / 100)) - 1;
 
 # Maximum number of historical bandwidth usage statistics samples to retain.
-# Calculate the most we should need if everything works perfectly, and then round up
-# and add a couple of additional samples to allow for timing variations.
-# There's no performance impact here because we always search for a matching bandwidth
-# sample period starting with the most recent result. Redundant samples at the other
-# end of the array have no impact beyond a *tiny* increase in memory usage.
-my $max_recent_bandwidth_usages;
-if ($icmp_interval_idle > 0) {
-	$max_recent_bandwidth_usages = &round_up( ((($icmp_interval_idle * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
-} else {
-	$max_recent_bandwidth_usages = &round_up( ((($icmp_interval_loaded * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
-}
+# We use these samples to check whether the connection is idle, and to check bandwidth
+# usage at the time of each request and response, so we need to make sure we have enough
+# samples for both.
+#
+# We calculate what should be the maximum number of samples required for each type of
+# usage, plus a couple more to make sure, then select the largest number. Note that a
+# couple of extra samples does not impact performance because we always search backwards
+# starting with the most recent sample. Redundant samples at the end of the array have
+# no impact beyond a *tiny* increase in memory usage.
+my $max_for_adaptive_idle_delay = $icmp_adaptive ? &round_up($icmp_adaptive_idle_delay / $latency_check_interval) + 2 : 0;
+my $max_icmp_interval = $icmp_interval_idle > $icmp_interval_loaded ? $icmp_interval_idle : $icmp_interval_loaded;
+my $max_for_icmp_results = &round_up( ((($max_icmp_interval * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
+my $max_recent_bandwidth_usages = $max_for_icmp_results > $max_for_adaptive_idle_delay ? $max_for_icmp_results : $max_for_adaptive_idle_delay;
 
 # Create an array to store the recent bandwidth usage statistics, and initialise it
 my @recent_bandwidth_usages = ();
@@ -1069,6 +1072,11 @@ sub check_config {
 		$fatal_error = 1;
 	}
 
+	if ($icmp_adaptive_idle_delay <= $latency_check_interval) {
+		&output(0, "INIT: ERROR: Adaptive ICMP idle delay (\"icmp_adaptive_idle_delay\") must be greater than latency_check_interval ($latency_check_interval)");
+		$fatal_error = 1;
+	}
+
 	if ($icmp_interval_idle < 0) {
 		&output(0, "INIT: ERROR: ICMP interval (\"icmp_interval_idle\") cannot be less than 0");
 		$fatal_error = 1;
@@ -1091,6 +1099,11 @@ sub check_config {
 
 	if ($latency_check_summary_interval ne "auto" && $latency_check_summary_interval < 0) {
 		&output(0, "INIT: ERROR: Latency check summary interval (\"latency_check_summary_interval\") cannot be negative");
+		$fatal_error = 1;
+	}
+	
+	if ($status_summary_interval ne "auto" && $status_summary_interval < 0) {
+		&output(0, "INIT: ERROR: Status summary interval (\"status_summary_interval\") cannot be negative");
 		$fatal_error = 1;
 	}
 	
@@ -1556,7 +1569,7 @@ sub check_latency {
 			if ($icmp_interval_idle == 0) {
 				# Suspend ICMP threads if they're not already suspended, and return LATENCY_OK
 				if (!&are_icmp_threads_suspended()) {
-					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - suspending ICMP threads"); }
+					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - suspending ICMP threads"); }
 					
 					&suspend_icmp_threads();
 					&clear_latency_results();
@@ -1572,7 +1585,7 @@ sub check_latency {
 				my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
 				return (LATENCY_OK, \@summary_results, \());
 			} elsif ($icmp_interval != $icmp_interval_idle) {
-				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - setting ICMP interval to $icmp_interval_idle" . "s"); }
+				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - setting ICMP interval to $icmp_interval_idle" . "s"); }
 				
 				lock ($icmp_interval);
 				$icmp_interval = $icmp_interval_idle;
@@ -1636,7 +1649,7 @@ sub check_latency {
 		# A strike is (by definition) a spurious bad result, so we mark the result as "good".
 		if ($reflector_strikeout_threshold != 0) { # if $reflector_strikeout_threshold == 0 strikes are disabled
 			if ($ul_time == ICMP_TIMED_OUT || $ul_time == ICMP_INVALID || $ul_time > $ul_max_idle_latency) {
-				if ($ul_bw < $ul_bw_idle_threshold) {
+				if ($ul_time == ICMP_INVALID || $ul_bw < $ul_bw_idle_threshold) {
 					&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "upload");
 					$ul_good = 1;
 					$ul_strike = 1;
@@ -1649,7 +1662,7 @@ sub check_latency {
 				$ul_strike = 0;
 			}
 			if ($dl_time == ICMP_TIMED_OUT || $dl_time == ICMP_INVALID || $dl_time > $dl_max_idle_latency) {
-				if ($dl_bw < $dl_bw_idle_threshold) {
+				if ($dl_time == ICMP_INVALID || $dl_bw < $dl_bw_idle_threshold) {
 					&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "download");
 					$dl_good = 1;
 					$dl_strike = 1;
@@ -2989,22 +3002,38 @@ sub get_bandwidth_usage_at {
 	&fatal_error("Failed to get $direction bandwidth at ". &format_time($time) . ". Earliest of " . scalar(@recent_bandwidth_usages) . " (max $max_recent_bandwidth_usages) bandwidth samples' start time = " . &format_time($earliest_start_time));
 }
 
-# Check whether the connection is idle in both directions
-# Returns 1 if idle, 0 if loaded
+# Check whether the connection has been idle in both directions for at least
+# $icmp_adaptive_idle_delay seconds.
+# Returns 1 if idle, 0 if loaded.
 sub is_connection_idle {
+	my $start_time;
+	my $end_time;
 	my $bw_usage_ul;
 	my $bw_usage_dl;
 	
+	# Calculate the lower limit on times we need to search
+	my $min_time = gettimeofday() - $icmp_adaptive_idle_delay;
+	
+	# Bandwidth usage samples are ordered from newest -> oldest
+	# We want to search backwards until we hit a sample whose
+	# end time is greater than $min_time	
 	foreach my $bw_usage_ref (@recent_bandwidth_usages) {
-		(undef, undef, $bw_usage_ul, $bw_usage_dl, undef, undef) = @{$bw_usage_ref};
-		if (defined($bw_usage_ul) && defined($bw_usage_dl)) {
+		($start_time, $end_time, $bw_usage_ul, $bw_usage_dl, undef, undef) = @{$bw_usage_ref};
+		
+		if (defined($start_time) && $end_time > $min_time) {
 			if ($bw_usage_ul >= $ul_bw_idle_threshold || $bw_usage_dl >= $dl_bw_idle_threshold) {
+				# This sample indicates a loaded connection
 				return 0;
 			}
+		} else {
+			# If we reach here we've searched back as far as $icmp_adaptive_idle_delay
+			# and found no samples that indicate a loaded connection
+			return 1;
 		}
 	}
 	
-	# If we reach here, none of the bandwidth samples indicates a loaded connection
+	# If we reach here we searched all of the bandwidth samples and none
+	# of them indicate a loaded connection
 	return 1;
 }
 
