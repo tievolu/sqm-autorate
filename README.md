@@ -64,8 +64,8 @@ tmp_folder                      /tmp                           Location for temp
 
 log_file                                                       Log file path/name. If this is not set, logging to a file will be disabled. Note: Log rotation must be handled separately (e.g. with logrotate)
 use_syslog                      1                boolean       If use_syslog == 1, important messages will be sent to the syslog
-latency_check_summary_interval  auto             seconds       Interval between summary latency check results output. "auto" sets this to $max_recent_results * $icmp_interval_[idle|loaded].
-status_summary_interval         60               seconds       Interval between status summaries. 0 disables.
+latency_check_summary_interval  auto             seconds       Interval between summary latency check results output. 0 disables. "auto" sets this to max_recent_results * $icmp_interval_[idle|loaded].
+status_summary_interval         auto             seconds       Interval between status summaries. 0 disables. "auto" maintains this at latency_check_summary_interval * 30
 log_bw_changes                  1                boolean       Print information on bandwidth changes to the log. Automatically enabled if debug_bw_changes=1.
 log_details_on_bw_changes       1                boolean       When a bandwidth change occurs, print the latency results that triggered it. Automatically enabled if debug_bw_changes=1.
 
