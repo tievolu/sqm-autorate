@@ -2637,9 +2637,15 @@ sub handle_connection_down {
 		if ($log_bw_changes) { &print_latency_results_summary(@{$summary_results_array_ref}); }
 		
 		# Send high priority alert to the syslog
-		&output(1, "Internet connection appears to be down. Taking no action.", 1);
+		&output(1, "Internet connection appears to be down.", 1);
 		&set_connection_down();
 
+		# Set ICMP interval to idle
+		if ($icmp_interval_idle > 0 && $icmp_interval != $icmp_interval_idle) {
+			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_idle" . "s"); }
+			$icmp_interval != $icmp_interval_idle;
+		}
+		
 		# Indicate that connection state has changed
 		return 1;
 	} else {
