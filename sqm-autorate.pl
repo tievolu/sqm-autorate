@@ -1340,6 +1340,7 @@ sub print_latency_results_details {
 	
 	foreach my $result_array_ref (@detailed_results_array) {
 		my (
+			$sent_time,
 			$ip,
 			$packet_id,
 			$seq,
@@ -1355,7 +1356,8 @@ sub print_latency_results_details {
 		) = @{$result_array_ref};
 		
 		$detailed_results .= sprintf(
-			"LATENCY DETAIL: ip=%-15s id=%-5s seq=%-5s ul_time=%-5s dl_time=%-5s ul_bw=%-7s dl_bw=%-7s ul=%-4s dl=%-4s ul_strike=%-3s dl_strike=%-3s %s\n",
+			"LATENCY DETAIL: sent=%s ip=%-15s id=%-5s seq=%-5s ul_time=%-5s dl_time=%-5s ul_bw=%-7s dl_bw=%-7s ul=%-4s dl=%-4s ul_strike=%-3s dl_strike=%-3s %s\n",
+			&format_time($sent_time),
 			$ip,
 			$packet_id,
 			$seq,
@@ -1716,6 +1718,7 @@ sub check_latency {
 		if ($ignore_result) {
 			if ($need_detailed_results) {
 				my @result_details = (
+					$start_time,
 					$ip,
 					$packet_id,
 					$seq,
@@ -1810,6 +1813,7 @@ sub check_latency {
 		# Create an array containing the details for this result
 		if ($need_detailed_results) {
 			my @result_details = (
+				$start_time,
 				$ip,
 				$packet_id,
 				$seq,
@@ -1975,12 +1979,12 @@ sub send_icmp_timestamp_request {
 	# Send the message
 	send($fd, $msg, 0, pack_sockaddr_in(0, inet_aton($ip)));
 	if ($debug_icmp) {
-		&output(0,
-			"ICMP DEBUG: SEND:              " . 
-			sprintf(" ip=%-15s", $ip) .
-			sprintf(" id=%-5s", $id) .
-			sprintf(" seq=%-5s", $seq)
-		);
+		&output(0, sprintf(
+			"ICMP DEBUG: SEND:                                 ip=%-15s id=%-5s seq=%-5s",
+			$ip,
+			$id,
+			$seq
+		));
 	}
 
 	# Update counters
@@ -2072,23 +2076,22 @@ sub handle_icmp_reply {
 		}
 		
 		if ($debug_icmp) {
-			&output(0,
-				"ICMP DEBUG: RECEIVE: CORRECTED:" .
-				sprintf(" ip=%-15s", $from_ip) .
-				sprintf(" id=%-5s", $reply_id) .
-				sprintf(" seq=%-5s", $reply_seq) .
-				sprintf(" orig=%-10s", $icmp_orig) .
-				sprintf(" recv=%-10s", $icmp_recv) .
-				sprintf(" tran=%-10s", $icmp_tran) .
-				sprintf(" end=%-10s", $icmp_end) .
-				sprintf(" offset=%-11s", $offset) .
-				sprintf(" ul=%-5s", $ul_time) .
-				sprintf(" dl=%-5s", $dl_time) .
-				sprintf(" rtt=%-5s", $rtt) .
-				sprintf(" ul_bw=%-7s", &kbps_to_mbps($bandwidth_usage{"upload"})) .
-				sprintf(" dl_bw=%-7s", &kbps_to_mbps($bandwidth_usage{"download"})) .
-				sprintf(" pending=%-4s", $pending_requests)
-			);
+			&output(0, sprintf(
+				"ICMP DEBUG: RECEIVE: CORRECTED: sent=%s ip=%-15s id=%-5s seq=%-5s orig=%-10s recv=%-10s tran=%-10s end=%-10s offset=%-11s ul=%-5s dl=%-5s rtt=%-5s pending=%-4s",
+				&format_time($icmp_sent),
+				$from_ip,
+				$reply_id,
+				$reply_seq,
+				$icmp_orig,
+				$icmp_recv,
+				$icmp_tran,
+				$icmp_end,
+				$offset,
+				$ul_time,
+				$dl_time,
+				$rtt,
+				$pending_requests
+			));
 		}
 
 		# Add result to the shared array
@@ -2125,20 +2128,17 @@ sub correct_icmp_timestamps {
 	my $dl_time = $icmp_end - $icmp_tran;
 
 	if ($debug_icmp) {
-		&output(0,
-			"ICMP DEBUG: RECEIVE:       RAW:" .
-			sprintf(" ip=%-15s", $reflector_ip) .
-			sprintf(" id=%-5s", $id) .
-			sprintf(" seq=%-5s", $seq) .
-			sprintf(" orig=%-10s", $icmp_orig) .
-			sprintf(" recv=%-10s", $icmp_recv) .
-			sprintf(" tran=%-10s", $icmp_tran) .
-			sprintf(" end=%-10s", $icmp_end) .
-			"                   " .
-			"         " .
-			"         " .
-			sprintf(" rtt=%-5s", ($icmp_end - $icmp_orig))
-		);
+		&output(0, sprintf(
+			"ICMP DEBUG: RECEIVE:       RAW:                   ip=%-15s id=%-5s seq=%-5s orig=%-10s recv=%-10s tran=%-10s end=%-10s                                      rtt=%-5s",
+			$reflector_ip,
+			$id,
+			$seq,
+			$icmp_orig,
+			$icmp_recv,
+			$icmp_tran,
+			$icmp_end,
+			($icmp_end - $icmp_orig)
+		));
 	}
 	
 	# Get the current offset for this reflector. The offset
@@ -2345,18 +2345,19 @@ sub process_icmp_timeouts {
 		if ($icmp_timeout_times{$request_sig} <= $current_time) {
 			my ($request_ip, $request_id, $request_seq) = split(/ /, $request_sig);
 
-			if ($debug_icmp || $debug_icmp_timeout) {
-				&output(0,
-					"ICMP DEBUG: RECEIVE: TIMED OUT:" .
-					" ip="  . sprintf("%-15s", $request_ip) .
-					" id="  . sprintf("%-5s", $request_id) .
-					" seq=" . sprintf("%-5s", $request_seq)
-				);
-			}
-
 			# Set the received time and get the sent time for this timed out request
 			my $icmp_received = gettimeofday();
 			my $icmp_sent = $icmp_sent_times{$request_sig};
+			
+			if ($debug_icmp || $debug_icmp_timeout) {
+				&output(0, sprintf(
+					"ICMP DEBUG: RECEIVE: TIMED OUT: sent=%s ip=%-15s id=%-5s seq=%-5s",
+					&format_time($icmp_sent),
+					$request_ip,
+					$request_id,
+					$request_seq
+				));
+			}
 
 			# Add timed out result to the shared array
 			{
