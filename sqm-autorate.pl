@@ -1566,33 +1566,35 @@ sub check_latency {
 	# If the connection is loaded, the ICMP interval is set to $icmp_interval_loaded.
 	if ($icmp_adaptive) {
 		if (&is_connection_idle()) {
-			if ($icmp_interval_idle == 0) {
-				# Suspend ICMP threads if they're not already suspended, and return LATENCY_OK
-				if (!&are_icmp_threads_suspended()) {
-					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - suspending ICMP threads"); }
+			if (!&is_connection_down()) {
+				if ($icmp_interval_idle == 0) {
+					# Suspend ICMP threads if they're not already suspended, and return LATENCY_OK
+					if (!&are_icmp_threads_suspended()) {
+						if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - suspending ICMP threads"); }
 					
-					&suspend_icmp_threads();
-					&clear_latency_results();
+						&suspend_icmp_threads();
+						&clear_latency_results();
+						&update_auto_summary_intervals();
+					}
+				
+					# set the average bandwidth so that relaxation checks function correctly
+					my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
+					&set_average_bandwidth_usage("upload", $ul_bw_ave);
+					&set_average_bandwidth_usage("download", $dl_bw_ave);
+				
+					# Return summary results containing only average bandwidth usage
+					my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
+					return (LATENCY_OK, \@summary_results, \());
+				} elsif ($icmp_interval != $icmp_interval_idle) {
+					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - setting ICMP interval to $icmp_interval_idle" . "s"); }
+				
+					lock ($icmp_interval);
+					$icmp_interval = $icmp_interval_idle;
+				
 					&update_auto_summary_intervals();
+				
+					# Fall through to continue with latency check
 				}
-				
-				# set the average bandwidth so that relaxation checks function correctly
-				my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
-				&set_average_bandwidth_usage("upload", $ul_bw_ave);
-				&set_average_bandwidth_usage("download", $dl_bw_ave);
-				
-				# Return summary results containing only average bandwidth usage
-				my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
-				return (LATENCY_OK, \@summary_results, \());
-			} elsif ($icmp_interval != $icmp_interval_idle) {
-				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - setting ICMP interval to $icmp_interval_idle" . "s"); }
-				
-				lock ($icmp_interval);
-				$icmp_interval = $icmp_interval_idle;
-				
-				&update_auto_summary_intervals();
-				
-				# Fall through to continue with latency check
 			}
 		} elsif ($icmp_interval_idle == 0 && &are_icmp_threads_suspended()) {
 			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - resuming ICMP threads"); }
@@ -2640,10 +2642,10 @@ sub handle_connection_down {
 		&output(1, "Internet connection appears to be down.", 1);
 		&set_connection_down();
 
-		# Set ICMP interval to idle
-		if ($icmp_interval_idle > 0 && $icmp_interval != $icmp_interval_idle) {
-			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_idle" . "s"); }
-			$icmp_interval != $icmp_interval_idle;
+		# Set ICMP interval to 1 second
+		if ($icmp_interval_idle == 0 || $icmp_interval != $icmp_interval_idle) {
+			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to 1s"); }
+			$icmp_interval = 1;
 		}
 		
 		# Indicate that connection state has changed
@@ -2668,6 +2670,12 @@ sub handle_connection_up {
 		# Send high priority alert to the syslog
 		&output(1, "Internet connection is back up", 1);
 		&unset_connection_down();
+		
+		# Set ICMP interval to $icmp_interval_loaded if not already set to $icmp_interval_idle
+		if ($icmp_interval_idle == 0 || $icmp_interval != $icmp_interval_idle) {
+			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_loaded " . "s"); }
+			$icmp_interval = $icmp_interval_loaded;
+		}
 
 		# Reset the bandwidth to the standard values if necessary.
 		# Either way the recent latency results will be cleared so
