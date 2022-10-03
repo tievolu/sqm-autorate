@@ -334,6 +334,9 @@ my $reset = 0;
 # Global variables - don't mess with these
 #######################################################################################
 
+# Flag to indicate whether we should suspend ICMP threads when idle
+my $icmp_adaptive_idle_suspend = $icmp_adaptive && $icmp_interval_idle == 0 ? 1 : 0;
+
 # Number of bad pings required to trigger a "bad" latency result
 my $max_bad_pings = &round($max_recent_results * ($bad_ping_pc / 100)) - 1;
 
@@ -348,9 +351,8 @@ my $max_bad_pings = &round($max_recent_results * ($bad_ping_pc / 100)) - 1;
 # starting with the most recent sample. Redundant samples at the end of the array have
 # no impact beyond a *tiny* increase in memory usage.
 my $max_for_adaptive_idle_delay = $icmp_adaptive ? &round_up($icmp_adaptive_idle_delay / $latency_check_interval) + 2 : 0;
-my $max_icmp_interval = $icmp_interval_idle > $icmp_interval_loaded ? $icmp_interval_idle : $icmp_interval_loaded;
-my $max_for_icmp_results = &round_up( ((($max_icmp_interval * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
-my $max_recent_bandwidth_usages = $max_for_icmp_results > $max_for_adaptive_idle_delay ? $max_for_icmp_results : $max_for_adaptive_idle_delay;
+my $max_for_icmp_results = &round_up( (((max($icmp_interval_loaded, $icmp_interval_idle, 1) * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
+my $max_recent_bandwidth_usages = max($max_for_icmp_results, $max_for_adaptive_idle_delay);
 
 # Create an array to store the recent bandwidth usage statistics, and initialise it
 my @recent_bandwidth_usages = ();
@@ -1450,7 +1452,7 @@ sub print_status_summary {
 			$icmp_response_count,
 			sprintf("%.2f", $icmp_response_bytes / 1048576),
 			$icmp_interval_loaded,
-			$icmp_interval_idle == 0 ? "inf" : $icmp_interval_idle . "s",
+			$icmp_adaptive_idle_suspend ? "inf" : $icmp_interval_idle . "s",
 		);
 	}
 
@@ -1480,7 +1482,7 @@ sub update_auto_summary_intervals {
 	# Latency check summary
 	if (&get_config_property("latency_check_summary_interval", "auto") eq "auto") {
 		my $previous_latency_check_summary_time = $next_latency_check_summary_time - $latency_check_summary_interval;
-		if ($icmp_interval_idle == 0 && &are_icmp_threads_suspended()) {
+		if ($icmp_adaptive_idle_suspend && &are_icmp_threads_suspended()) {
 			# TODO: is there a way to calculate a sensible interval here instead of hard-coding it?
 			$latency_check_summary_interval = 20;
 		} else {
@@ -1559,67 +1561,37 @@ sub check_latency {
 	&update_bandwidth_usage_stats(&get_wan_bytes());
 	
 	# Adaptive ICMP
-	#
-	# If the connection is idle, the ICMP interval is set to $icmp_interval_idle, or pings are suspended
-	# completely if $icmp_interval_idle == 0.
-	#
-	# If the connection is loaded, the ICMP interval is set to $icmp_interval_loaded.
 	if ($icmp_adaptive) {
+		my $return_bandwidth_results = 0;
 		if (&is_connection_idle()) {
+			# Connection down scenario is handled separately.
+			# See &handle_connection_down() and &handle_connection_up().
 			if (!&is_connection_down()) {
-				if ($icmp_interval_idle == 0) {
-					# Suspend ICMP threads if they're not already suspended, and return LATENCY_OK
-					if (!&are_icmp_threads_suspended()) {
-						if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - suspending ICMP threads"); }
-					
-						&suspend_icmp_threads();
-						&clear_latency_results();
-						&update_auto_summary_intervals();
-					}
-				
-					# set the average bandwidth so that relaxation checks function correctly
-					my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
-					&set_average_bandwidth_usage("upload", $ul_bw_ave);
-					&set_average_bandwidth_usage("download", $dl_bw_ave);
-				
-					# Return summary results containing only average bandwidth usage
-					my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
-					return (LATENCY_OK, \@summary_results, \());
-				} elsif ($icmp_interval != $icmp_interval_idle) {
-					if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection has been idle for $icmp_adaptive_idle_delay" . "s - setting ICMP interval to $icmp_interval_idle" . "s"); }
-				
-					lock ($icmp_interval);
-					$icmp_interval = $icmp_interval_idle;
-				
-					&update_auto_summary_intervals();
-				
-					# Fall through to continue with latency check
+				if (!&is_icmp_adaptive_idle()) {
+					&set_icmp_adaptive_idle();
+				}
+				if ($icmp_adaptive_idle_suspend) {
+					$return_bandwidth_results = 1;
 				}
 			}
-		} elsif ($icmp_interval_idle == 0 && &are_icmp_threads_suspended()) {
-			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - resuming ICMP threads"); }
+		} elsif (&is_icmp_adaptive_idle()) {
+			&set_icmp_adaptive_loaded();
+			if ($icmp_adaptive_idle_suspend) {
+				$return_bandwidth_results = 1;
+			}
+		}
+		
+		if ($return_bandwidth_results) {
+			# If we reach here we have no ICMP results to examine, so just return a skeleton result
+			# array containing only bandwidth usage figures. We also need to set the average
+			# bandwidth usages to ensure that relaxation works correctly while we're idle.
 			
-			&resume_icmp_threads();
-			&update_auto_summary_intervals();
-			
-			# Set the average bandwidth so that relaxation checks function correctly
 			my ($ul_bw_ave, $dl_bw_ave) = &get_average_bandwidth_usage_since_last_latency_summary();
 			&set_average_bandwidth_usage("upload", $ul_bw_ave);
 			&set_average_bandwidth_usage("download", $dl_bw_ave);
-			
-			# We have no results yet, so return LATENCY_OK for now, along with
-			# summary results containing only average bandwidth usage
+				
 			my @summary_results = (0, 0, 0, 0, $ul_bw_ave, $dl_bw_ave, 0, 0);
 			return (LATENCY_OK, \@summary_results, \());
-		} elsif ($icmp_interval == $icmp_interval_idle) {
-			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - setting ICMP interval to $icmp_interval_loaded" . "s"); }
-			
-			lock ($icmp_interval);
-			$icmp_interval = $icmp_interval_loaded;
-			
-			&update_auto_summary_intervals();
-			
-			# Fall through to continue with latency check
 		}
 	}
 
@@ -2642,10 +2614,18 @@ sub handle_connection_down {
 		&output(1, "Internet connection appears to be down.", 1);
 		&set_connection_down();
 
-		# Set ICMP interval to 1 second
-		if ($icmp_interval_idle == 0 || $icmp_interval != $icmp_interval_idle) {
-			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to 1s"); }
-			$icmp_interval = 1;
+		if ($icmp_adaptive) {
+			if ($icmp_adaptive_idle_suspend) {
+				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to 1s"); }
+				# If we suspended the threads we would never know when the
+				# connection comes back up, so just set ICMP interval to 1s
+				$icmp_interval = 1;
+			} else {
+				# Set Adaptive ICMP to idle mode if not idling already
+				if (!&is_icmp_adaptive_idle()) {
+					&set_icmp_adaptive_idle();
+				}
+			}
 		}
 		
 		# Indicate that connection state has changed
@@ -2671,10 +2651,12 @@ sub handle_connection_up {
 		&output(1, "Internet connection is back up", 1);
 		&unset_connection_down();
 		
-		# Set ICMP interval to $icmp_interval_loaded if not already set to $icmp_interval_idle
-		if ($icmp_interval_idle == 0 || $icmp_interval != $icmp_interval_idle) {
-			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_loaded " . "s"); }
-			$icmp_interval = $icmp_interval_loaded;
+		if ($icmp_adaptive) {
+			if ($icmp_adaptive_idle_suspend) {
+				# Reset ICMP interval to $icmp_interval_loaded
+				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_loaded" . "s"); }
+				$icmp_interval = $icmp_interval_loaded;
+			}
 		}
 
 		# Reset the bandwidth to the standard values if necessary.
@@ -3024,9 +3006,12 @@ sub is_connection_idle {
 	my $end_time;
 	my $bw_usage_ul;
 	my $bw_usage_dl;
-	
+		
 	# Calculate the lower limit on times we need to search
-	my $min_time = gettimeofday() - $icmp_adaptive_idle_delay;
+	# If Adaptive ICMP is already in idle mode we only need to check the most
+	# recent sample - we know all samples as far back as $icmp_adaptive_idle_delay
+	# won't show any load.
+	my $min_time = gettimeofday() - (&is_icmp_adaptive_idle() ? $latency_check_interval : $icmp_adaptive_idle_delay);
 	
 	# Bandwidth usage samples are ordered from newest -> oldest
 	# We want to search backwards until we hit a sample whose
@@ -3076,6 +3061,47 @@ sub get_average_bandwidth_usage_since_last_latency_summary {
 	}
 	
 	return ($bw_usage_ul_total / scalar(@recent_bandwidth_usages), $bw_usage_dl_total / scalar(@recent_bandwidth_usages));
+}
+
+# Check whether Adaptive ICMP is currently in idle mode
+# Return 1 if idling, otherwise return 0.
+sub is_icmp_adaptive_idle {
+	if ($icmp_adaptive_idle_suspend) {
+		if (&are_icmp_threads_suspended()) {
+			return 1;
+		}
+	} elsif ($icmp_interval == $icmp_interval_idle) {
+		return 1;
+	}
+	
+	return 0;
+}
+
+# Set Adaptive ICMP to idle mode	
+sub set_icmp_adaptive_idle {
+	if ($icmp_adaptive_idle_suspend) {
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - suspending ICMP threads"); }
+		&suspend_icmp_threads();
+		&clear_latency_results();
+	} else {
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - setting ICMP interval to $icmp_interval_idle" . "s"); }
+		lock ($icmp_interval);
+		$icmp_interval = $icmp_interval_idle;
+	}
+	&update_auto_summary_intervals();
+}
+
+# Set Adaptive ICMP to loaded mode
+sub set_icmp_adaptive_loaded {
+	if ($icmp_adaptive_idle_suspend) {
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - resuming ICMP threads"); }
+		&resume_icmp_threads();
+	} else {
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Conenction is loaded - setting ICMP interval to $icmp_interval_loaded" . "s"); }
+		lock ($icmp_interval);
+		$icmp_interval = $icmp_interval_loaded;
+	}
+	&update_auto_summary_intervals();
 }
 
 # Get the reflector pool from the specified CSV file.
