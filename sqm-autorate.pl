@@ -69,13 +69,15 @@
 # https://github.com/tievolu/timestamp-reflectors
 #
 # ICMP requests are sent on the ICMP Sender thread at regular intervals
-# controlled by the "icmp_interval" property), while the ICMP Receiver
-# thread listens for responses. The results are stored in a shared
-# array and the contents are periodically evaluated and acted upon on
-# the main thread. See the "latency_check_interval" property.
+# which, by default, are set according to load (see the "icmp_adaptive",
+# "icmp_interval_idle", "icmp_interval_loaded", and
+# "icmp_adaptive_idle_delay" properties), while the ICMP Receiver thread
+# listens for responses. The results are stored in a shared array and
+# the contents are periodically evaluated and acted upon on the main
+# thread. See the "latency_check_interval" property.
 #
-# The targets for the ICMP messages, or "reflectors" are chosen at random
-# from the CSV file specified in the "reflectors_csv" property.
+# The targets for the ICMP messages, or "reflectors", are chosen at
+# random from the CSV file specified in the "reflectors_csv" property.
 #
 # If a reflector performs poorly, it will be replaced with a new random
 # reflector from the CSV file. Performing "poorly" means timing out too
@@ -287,7 +289,7 @@ my $dl_bw_idle_threshold           = &get_config_property("dl_bw_idle_threshold"
 my $reflectors_csv_file            = &get_config_property("reflectors_csv_file",            undef);
 my $number_of_reflectors           = &get_config_property("number_of_reflectors",           undef);
 my $reflector_strikeout_threshold  = &get_config_property("reflector_strikeout_threshold",  3);
-my $reflector_strike_ttl           = &get_config_property("reflector_strike_ttl",           60);
+my $reflector_strike_ttl           = &get_config_property("reflector_strike_ttl",           "auto");
 my $tmp_folder                     = &get_config_property("tmp_folder",                     "/tmp");
 my $log_file                       = &get_config_property("log_file",                       undef);
 my $use_syslog                     = &get_config_property("use_syslog",                     1);
@@ -406,6 +408,12 @@ my $status_summary_auto_frequency = 30;  # i.e. one status summary for every 20 
 # Number of reflectors that have been struckout
 my $struckout_count = 0;
 
+# Flag to indicate whether the reflector pool has been exhausted and reloaded
+my $reflectors_reloaded = 0;
+
+# Flag to indicate whether the ICMP/reflector warmup has completed
+my $icmp_warmup_done = 0;
+
 #######################################################################################
 # Initialisation
 #######################################################################################
@@ -442,7 +450,9 @@ my $initial_reflector_pool_size = scalar(@reflector_pool);
 &check_config();
 
 # Set the ICMP interval - default to / start with the "loaded" interval
+# This will be modified when idle if adaptive ICMP is enabled
 $icmp_interval = $icmp_interval_loaded;
+&output(0, "INIT: ICMP interval set to $icmp_interval_idle" . "s");
 
 # If necessary, set the latency check summary interval
 if ($latency_check_summary_interval eq "auto") {
@@ -453,6 +463,18 @@ if ($latency_check_summary_interval eq "auto") {
 if ($status_summary_interval eq "auto") {
 	$status_summary_interval = $latency_check_summary_interval * 30;
 }
+
+# If necessary, set the initial strike TTL. 
+if ($reflector_strike_ttl eq "auto") {
+	&update_reflector_strike_ttl();
+	&output(0, "INIT: Reflector strike TTL set to " . $reflector_strike_ttl . "s");
+}
+
+# Initialize ICMP packet/byte counters
+$icmp_request_count  = 0;
+$icmp_request_bytes  = 0;
+$icmp_response_count = 0;
+$icmp_response_bytes = 0;
 
 # Create a socket on which to send the ping requests
 my $fd = &create_icmp_socket();
@@ -1459,10 +1481,11 @@ sub print_status_summary {
 	# Only print the reflector summary if strikes are enabled
 	if ($reflector_strikeout_threshold != 0) {
 		my $reflector_summary = sprintf(
-			"Reflectors - in use: %d, strikeout threshold: %d, strike TTL: %d, struckout: %d, pool: %d/%d",
+			"Reflectors - in use: %d, strikeout threshold: %d, strike TTL loaded/idle: %ds/%ds, struckout: %d, pool: %d/%d",
 			$number_of_reflectors,
 			$reflector_strikeout_threshold,
-			$reflector_strike_ttl,
+			&round(($number_of_reflectors / (1 / ($icmp_interval_loaded))) * ($reflector_strikeout_threshold + 1)),
+			&round(($number_of_reflectors / (1 / ($icmp_interval_idle))) * ($reflector_strikeout_threshold + 1)),
 			$struckout_count,
 			scalar(@reflector_pool),
 			$initial_reflector_pool_size
@@ -1561,7 +1584,7 @@ sub check_latency {
 	&update_bandwidth_usage_stats(&get_wan_bytes());
 	
 	# Adaptive ICMP
-	if ($icmp_adaptive) {
+	if ($icmp_adaptive && &is_icmp_warmup_done()) {
 		my $return_bandwidth_results = 0;
 		if (&is_connection_idle()) {
 			# Connection down scenario is handled separately.
@@ -3084,9 +3107,10 @@ sub set_icmp_adaptive_idle {
 		&suspend_icmp_threads();
 		&clear_latency_results();
 	} else {
-		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - setting ICMP interval to $icmp_interval_idle" . "s"); }
 		lock ($icmp_interval);
 		$icmp_interval = $icmp_interval_idle;
+		&update_reflector_strike_ttl();
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - ICMP interval set to $icmp_interval_idle" . "s, reflector strike TTL set to " . $reflector_strike_ttl . "s"); }
 	}
 	&update_auto_summary_intervals();
 }
@@ -3097,11 +3121,75 @@ sub set_icmp_adaptive_loaded {
 		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - resuming ICMP threads"); }
 		&resume_icmp_threads();
 	} else {
-		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Conenction is loaded - setting ICMP interval to $icmp_interval_loaded" . "s"); }
 		lock ($icmp_interval);
 		$icmp_interval = $icmp_interval_loaded;
+		&update_reflector_strike_ttl();
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - ICMP interval set to $icmp_interval_idle" . "s, reflector strike TTL set to " . $reflector_strike_ttl . "s"); }
 	}
 	&update_auto_summary_intervals();
+}
+
+# Check whether the script has been active long enough to filter out
+# any obviously bad reflectors from the initial set
+sub is_icmp_warmup_done {
+	if ($icmp_warmup_done) {
+		# Warmup has already completed
+		return 1;
+	}
+	
+	if (!$icmp_adaptive) {
+		# Adaptive ICMP is disabed. No need to warm up.
+		$icmp_warmup_done = 1;
+		return 1;
+	}
+	
+	if ($reflector_strikeout_threshold == 0) {
+		# Strikes are disabled - mark warmup as done and return
+		$icmp_warmup_done = 1;
+		return 1;
+	}
+	
+	if ($reflectors_reloaded) {
+		# We've exhausted the reflector pool and reloaded it.
+		# Extending the warmup period won't provide any benefit now.
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Warmup stopped due to exhaustion of reflector pool"); }
+		$icmp_warmup_done = 1;
+		return 1;		
+	}
+	
+	# Check whether we've sent a request to all of the reflectors at least
+	# enough times for obviously bad reflectors in the initial set to be
+	# struckout and replaced
+	my $warmup_request_threshold = $number_of_reflectors * ($reflector_strikeout_threshold + 1);
+	if ($icmp_request_count < $warmup_request_threshold) {
+		my $icmp_requests_remaining = $warmup_request_threshold - $icmp_request_count;
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: $icmp_requests_remaining of $warmup_request_threshold ICMP requests remaining"); }
+		return 0;
+	}
+		
+	# Go through all the reflectors and check for strikes
+	lock(%reflector_ips);
+	my $strike_count = 0;
+	foreach my $ip (keys(%reflector_ips)) {
+		if ($debug_icmp_adaptive) {
+			# Update the strike count and carry on
+			$strike_count += &get_strike_count($ip, "upload") + &get_strike_count($ip, "download");
+		} elsif (&get_strike_count($ip, "upload") || &get_strike_count($ip, "download")) {
+			# Fast (none debug) path. Found a reflector strike => keep warming up
+			return 0;
+		}
+	}
+	
+	if ($debug_icmp_adaptive && $strike_count > 0) {
+		# Found at least one reflector strike. Print debug and keep warming up.
+		&output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Active strikes remaining: $strike_count");
+		return 0;
+	}
+	
+	# If we reach here there were no strikes against any reflectors
+	if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: No active strikes => warmup done"); }
+	$icmp_warmup_done = 1;
+	return 1;
 }
 
 # Get the reflector pool from the specified CSV file.
@@ -3150,8 +3238,7 @@ sub get_reflectors {
 # Get the next non-duplicate reflector from the pool
 sub get_reflector {
 	my $reflector;
-	my $reflectors_reloaded = 0;
-
+	
 	while(1) {
 		if (scalar(@reflector_pool) > 0) {
 			# Take the next reflector out of the pool
@@ -3352,6 +3439,13 @@ sub clear_all_strikes {
 	%reflector_strikes_ul = ();
 	%reflector_strikes_dl = ();
 	if ($debug_strike) { &output(0, "STRIKE DEBUG: clear_all_strikes"); }
+}
+
+# If reflector strike TTL is set to "auto", update it based on the current ICMP interval
+sub update_reflector_strike_ttl {
+	if (&get_config_property("reflector_strike_ttl", "auto") eq "auto") {
+		$reflector_strike_ttl = &round(($number_of_reflectors / (1 / ($icmp_interval))) * ($reflector_strikeout_threshold + 1));
+	}
 }
 
 # Check whether a reflector has reached $reflector_strikeout_threshold
