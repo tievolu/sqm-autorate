@@ -1484,8 +1484,8 @@ sub print_status_summary {
 			"Reflectors - in use: %d, strikeout threshold: %d, strike TTL loaded/idle: %ds/%ds, struckout: %d, pool: %d/%d",
 			$number_of_reflectors,
 			$reflector_strikeout_threshold,
-			&round(($number_of_reflectors / (1 / ($icmp_interval_loaded))) * ($reflector_strikeout_threshold + 1)),
-			&round(($number_of_reflectors / (1 / ($icmp_interval_idle))) * ($reflector_strikeout_threshold + 1)),
+			&round(($number_of_reflectors / (1 / $icmp_interval_loaded)) * ($reflector_strikeout_threshold + 1)),
+			$icmp_adaptive_idle_suspend ? "inf" : &round(($number_of_reflectors / (1 / $icmp_interval_idle)) * ($reflector_strikeout_threshold + 1)),
 			$struckout_count,
 			scalar(@reflector_pool),
 			$initial_reflector_pool_size
@@ -3444,7 +3444,7 @@ sub clear_all_strikes {
 # If reflector strike TTL is set to "auto", update it based on the current ICMP interval
 sub update_reflector_strike_ttl {
 	if (&get_config_property("reflector_strike_ttl", "auto") eq "auto") {
-		$reflector_strike_ttl = &round(($number_of_reflectors / (1 / ($icmp_interval))) * ($reflector_strikeout_threshold + 1));
+		$reflector_strike_ttl = &round(($number_of_reflectors / (1 / $icmp_interval)) * ($reflector_strikeout_threshold + 1));
 	}
 }
 
