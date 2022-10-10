@@ -58,13 +58,13 @@ dl_max_loaded_latency                            milliseconds  Maximum download 
 reflectors_csv_file                                            CSV file containing the ICMP reflectors. The IP address must be in the first cell on each row. See https://github.com/tievolu/timestamp-reflectors
 number_of_reflectors            30                             Number of reflectors to use
 reflector_strikeout_threshold   3                              If a reflector performs poorly this many times within reflector_strike_ttl, we'll replace it (0 disables reflector strikes)
-reflector_strike_ttl            60                             Reflector strikes expire this many seconds after the associated ICMP response was received (or when it timed out)
+reflector_strike_ttl            auto                           Reflector strikes expire this many seconds after the associated ICMP response was received (or when it timed out). "auto" sets this to (number_of_reflectors / (1 / icmp_interval_[idle|loaded])) * (reflector_strikeout_threshold + 1).
 
 tmp_folder                      /tmp                           Location for temporary files describing the most recent bandwidth change and time
 
 log_file                                                       Log file path/name. If this is not set, logging to a file will be disabled. Note: Log rotation must be handled separately (e.g. with logrotate)
 use_syslog                      1                boolean       If use_syslog == 1, important messages will be sent to the syslog
-latency_check_summary_interval  auto             seconds       Interval between summary latency check results output. 0 disables. "auto" sets this to max_recent_results * $icmp_interval_[idle|loaded].
+latency_check_summary_interval  auto             seconds       Interval between summary latency check results output. 0 disables. "auto" sets this to max_recent_results * icmp_interval_[idle|loaded].
 status_summary_interval         auto             seconds       Interval between status summaries. 0 disables. "auto" maintains this at latency_check_summary_interval * 30
 log_bw_changes                  1                boolean       Print information on bandwidth changes to the log. Automatically enabled if debug_bw_changes=1.
 log_details_on_bw_changes       1                boolean       When a bandwidth change occurs, print the latency results that triggered it. Automatically enabled if debug_bw_changes=1.
