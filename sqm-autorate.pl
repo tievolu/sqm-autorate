@@ -424,6 +424,8 @@ STDERR->autoflush(1);
 # Process command line arguments
 &process_args();
 
+# Record start time
+my $script_start_time = gettimeofday();
 &output(1, "SQM Autorate started", 1);
 
 # Display configuration properties
@@ -1468,7 +1470,8 @@ sub print_status_summary {
 		lock($icmp_response_count);
 		lock($icmp_response_bytes);
 		$icmp_summary .= sprintf(
-			"ICMP - requests: %d (%s MB), responses: %d (%s MB), loaded/idle interval = %ss/%s",
+			"ICMP - uptime: %s, requests: %d (%s MB), responses: %d (%s MB), loaded/idle interval = %ss/%s",
+			&script_uptime(),
 			$icmp_request_count,
 			sprintf("%.2f", $icmp_request_bytes / 1048576),
 			$icmp_response_count,
@@ -2907,6 +2910,19 @@ sub get_rounded_secs_and_millis {
 	return ($secs, sprintf("%03d", $millis));
 }
 
+# Returns the script uptime in the following format:
+# XXX days, XX:XX:XX
+sub script_uptime {
+	my $uptime = int(gettimeofday() - $script_start_time);
+	
+	my $days = int($uptime / 86400);
+	my $hours = int(($uptime % 86400) / 3600);
+	my $mins = int(($uptime % 86400 % 3600) / 60);
+	my $secs = $uptime % 86400 % 3600 % 60;
+	
+	return sprintf("%d days, %02d:%02d:%02d", $days, $hours, $mins, $secs);
+}
+
 # Get the number of bytes transferred on the WAN interface
 # Returns an array containing the following:
 # 1. The time stamp at which the data was read
@@ -3187,7 +3203,13 @@ sub is_icmp_warmup_done {
 	}
 	
 	# If we reach here there were no strikes against any reflectors
-	if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: No active strikes => warmup done"); }
+	if ($debug_icmp_adaptive) {
+		my $warmup_duration = int(gettimeofday() - $script_start_time);
+		my $hours = int(($warmup_duration % 86400) / 3600);
+		my $mins = int(($warmup_duration % 86400 % 3600) / 60);
+		my $secs = $warmup_duration % 86400 % 3600 % 60;
+		&output(0, "ICMP ADAPTIVE DEBUG: WARMUP: No active strikes => warmup completed in " . sprintf("%02d:%02d:%02d", $hours, $mins, $secs));
+	}
 	$icmp_warmup_done = 1;
 	return 1;
 }
