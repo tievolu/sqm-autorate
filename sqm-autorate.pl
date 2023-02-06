@@ -428,6 +428,12 @@ STDERR->autoflush(1);
 my $script_start_time = gettimeofday();
 &output(1, "SQM Autorate started", 1);
 
+# Initialize adaptive ICMP start/total times
+my $icmp_adaptive_idle_start_time = $script_start_time;
+my $icmp_adaptive_loaded_start_time = $script_start_time;
+my $icmp_adaptive_idle_total_time = 0;
+my $icmp_adaptive_loaded_total_time = 0;
+
 # Display configuration properties
 &output(0, "INIT: Read " . scalar(keys(%config_properties)) . " configuration properties from $config_file: ");
 foreach my $key (sort {$a cmp $b} keys(%config_properties)) {
@@ -1470,16 +1476,31 @@ sub print_status_summary {
 		lock($icmp_response_count);
 		lock($icmp_response_bytes);
 		$icmp_summary .= sprintf(
-			"ICMP - uptime: %s, requests: %d (%s MB), responses: %d (%s MB), loaded/idle interval = %ss/%s",
-			&script_uptime(),
+			"ICMP - requests: %d (%s MB), responses: %d (%s MB), loaded/idle interval = %ss/%s",
 			$icmp_request_count,
 			sprintf("%.2f", $icmp_request_bytes / 1048576),
 			$icmp_response_count,
 			sprintf("%.2f", $icmp_response_bytes / 1048576),
 			$icmp_interval_loaded,
-			$icmp_adaptive_idle_suspend ? "inf" : $icmp_interval_idle . "s",
+			$icmp_adaptive_idle_suspend ? "inf" : $icmp_interval_idle . "s"
 		);
 	}
+	
+	my $uptime_summary = "";
+	
+	if ($icmp_adaptive) {
+		$uptime_summary .= sprintf(
+			"Uptime - total: %s, loaded: %s, idle: %s",
+			&script_uptime(),
+			&format_duration(&get_icmp_adaptive_total_time("loaded")),
+			&format_duration(&get_icmp_adaptive_total_time("idle"))
+		);
+	} else {
+		$uptime_summary .= sprintf(
+			"Uptime - %s",
+			&script_uptime()
+		);
+	}		
 
 	# Only print the reflector summary if strikes are enabled
 	if ($reflector_strikeout_threshold != 0) {
@@ -1493,9 +1514,9 @@ sub print_status_summary {
 			scalar(@reflector_pool),
 			$initial_reflector_pool_size
 		);		
-		&output(0, "$threshold_summary\n$icmp_summary\n$reflector_summary");
+		&output(0, "$threshold_summary\n$icmp_summary\n$uptime_summary\n$reflector_summary");
 	} else {
-		&output(0, "$threshold_summary\n$icmp_summary");
+		&output(0, "$threshold_summary\n$icmp_summary\n$uptime_summary");
 	}
 	
 	&print_log_line_separator_if_necessary();
@@ -2910,17 +2931,43 @@ sub get_rounded_secs_and_millis {
 	return ($secs, sprintf("%03d", $millis));
 }
 
-# Returns the script uptime in the following format:
-# XXX days, XX:XX:XX
-sub script_uptime {
-	my $uptime = int(gettimeofday() - $script_start_time);
+# Format a number of seconds to: XXX days, HH:mm:ss
+sub format_duration {
+	my ($duration) = @_;
 	
-	my $days = int($uptime / 86400);
-	my $hours = int(($uptime % 86400) / 3600);
-	my $mins = int(($uptime % 86400 % 3600) / 60);
-	my $secs = $uptime % 86400 % 3600 % 60;
+	my $days = int($duration / 86400);
+	my $hours = int(($duration % 86400) / 3600);
+	my $mins = int(($duration % 86400 % 3600) / 60);
+	my $secs = $duration % 86400 % 3600 % 60;
 	
 	return sprintf("%d days, %02d:%02d:%02d", $days, $hours, $mins, $secs);
+	
+}
+
+# Returns the script uptime in the following format:
+# XXX days, HH:mm:ss
+sub script_uptime {
+	return &format_duration(gettimeofday() - $script_start_time);
+}
+
+# Returns the total number of seconds spent in either the loaded
+# or idle adaptive ICMP modes
+sub get_icmp_adaptive_total_time {
+	my ($mode) = @_;
+	
+	if (&is_icmp_adaptive_idle()) {
+		if ($mode eq "loaded") {
+			return $icmp_adaptive_loaded_total_time;
+		} elsif ($mode eq "idle") {
+			return $icmp_adaptive_idle_total_time + (gettimeofday() - $icmp_adaptive_idle_start_time);
+		}
+	} else {
+		if ($mode eq "loaded") {
+			return $icmp_adaptive_loaded_total_time + (gettimeofday() - $icmp_adaptive_loaded_start_time);
+		} elsif ($mode eq "idle") {
+			return $icmp_adaptive_idle_total_time;
+		}
+	}
 }
 
 # Get the number of bytes transferred on the WAN interface
@@ -3129,6 +3176,9 @@ sub set_icmp_adaptive_idle {
 		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is idle - ICMP interval set to $icmp_interval_idle" . "s, reflector strike TTL set to " . $reflector_strike_ttl . "s"); }
 	}
 	&update_auto_summary_intervals();
+	
+	$icmp_adaptive_idle_start_time = gettimeofday();
+	$icmp_adaptive_loaded_total_time += $icmp_adaptive_idle_start_time - $icmp_adaptive_loaded_start_time;
 }
 
 # Set Adaptive ICMP to loaded mode
@@ -3143,6 +3193,9 @@ sub set_icmp_adaptive_loaded {
 		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - ICMP interval set to $icmp_interval_idle" . "s, reflector strike TTL set to " . $reflector_strike_ttl . "s"); }
 	}
 	&update_auto_summary_intervals();
+	
+	$icmp_adaptive_loaded_start_time = gettimeofday();
+	$icmp_adaptive_idle_total_time += $icmp_adaptive_loaded_start_time - $icmp_adaptive_idle_start_time;
 }
 
 # Check whether the script has been active long enough to filter out
