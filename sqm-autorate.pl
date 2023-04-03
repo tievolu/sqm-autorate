@@ -325,8 +325,7 @@ if ($debug_icmp) {
 # Variables controlled by command line arguments
 #######################################################################################
 
-# If $dryrun == 1 the script runs as normal, but bandwidth changes are not applied and
-# temp files are not modified
+# If $dryrun == 1 the script runs as normal, but bandwidth changes are not applied
 my $dryrun = 0;
 
 # If $reset == 1 we will simply reset everything to defaults and exit
@@ -364,12 +363,14 @@ my @recent_bandwidth_usages = ();
 my %reflector_strikes_ul;
 my %reflector_strikes_dl;
 
-# Temp files to hold information on the connection state and
-# the most recent bandwidth changes for each direction
-my $tmp_file_base                 = "$tmp_folder/sqm-autorate_";
-my $tmp_file_last_change          = $tmp_file_base . "last_change";
-my $tmp_file_last_change_time     = $tmp_file_base . "last_change_time";
-my $tmp_file_connection_down      = $tmp_file_base . "connection_down";
+# Connection state and the most recent bandwidth changes for each direction
+my $connection_down = 0;
+my %last_change;
+   $last_change{"upload"} = "";
+   $last_change{"download"} = "";
+my %last_change_time;
+   $last_change_time{"upload"} = 0;
+   $last_change_time{"download"} = 0;
 
 # Current bandwidth values. Read from UCI during initialisation,
 # then updated every time we change the bandwidth.
@@ -529,12 +530,8 @@ while (1) {
 		$force_status_summary = 0;
 	}
 
-	# If reset is specified, delete all temp files, reset bandwidths to standard, then finish
+	# If reset is specified, reset bandwidths to standard then finish
 	if ($reset) {
-		# Sanity check to avoid a destructive rm command
-		if ($tmp_folder ne "" && $tmp_file_base ne "") {
-			&run_sys_command("rm $tmp_file_base*");
-		}
 		&reset_bandwidth();
 		&finish();
 	}
@@ -1430,7 +1427,7 @@ sub print_status_summary {
 	&print_log_line_separator_if_necessary();
 	&output(0, "Current SQM bandwidth: " . &get_current_bandwidth("download") . " Kb/s download, " . &get_current_bandwidth("upload") . " Kb/s upload");
 
-	if (!&is_connection_down()) {
+	if (!$connection_down) {
 		foreach my $direction ("upload", "download") {
 			&is_bandwidth_at_min($direction, 1);
 			&is_increase_allowed($direction, 1);
@@ -1613,7 +1610,7 @@ sub check_latency {
 		if (&is_connection_idle()) {
 			# Connection down scenario is handled separately.
 			# See &handle_connection_down() and &handle_connection_up().
-			if (!&is_connection_down()) {
+			if (!$connection_down) {
 				if (!&is_icmp_adaptive_idle()) {
 					&set_icmp_adaptive_idle();
 				}
@@ -1892,7 +1889,7 @@ sub check_latency {
 		# If we reach here, all of the recent results timed out
 		# The connection might be down...
 
-		if ($total_results > $max_bad_pings || &is_connection_down()) {
+		if ($total_results > $max_bad_pings || $connection_down) {
 			# Sustained unresponsiveness, or the connection is already marked as down
 			$result_ul = LATENCY_DOWN;
 			$result_dl = LATENCY_DOWN;
@@ -2651,7 +2648,7 @@ sub update_bw_steps {
 sub handle_connection_down {
 	my ($summary_results_array_ref, $detailed_results_array_ref) = @_;
 	
-	if (!&is_connection_down()) {
+	if (!$connection_down) {
 		# Connection has just gone down. Print detailed latency results to the log file
 		if ($log_bw_changes || $log_details_on_bw_changes) { &print_log_line_separator_if_necessary(); }
 		if ($log_details_on_bw_changes || $debug_latency_check) { &print_latency_results_details(@{$detailed_results_array_ref}); }
@@ -2659,7 +2656,8 @@ sub handle_connection_down {
 		
 		# Send high priority alert to the syslog
 		&output(1, "Internet connection appears to be down.", 1);
-		&set_connection_down();
+		if ($debug_bw_changes) { &output(0, "Setting connection down flag"); }
+		$connection_down = 1;
 
 		if ($icmp_adaptive) {
 			if ($icmp_adaptive_idle_suspend) {
@@ -2688,7 +2686,7 @@ sub handle_connection_down {
 sub handle_connection_up {
 	my ($summary_results_array_ref, $detailed_results_array_ref) = @_;
 	
-	if (&is_connection_down()) {
+	if ($connection_down) {
 		# Connection has just come back up. Print detailed latency results to the log file
 		if ($log_bw_changes || $log_details_on_bw_changes) { &print_log_line_separator_if_necessary(); }
 		if ($log_details_on_bw_changes || $debug_latency_check) { &print_latency_results_details(@{$detailed_results_array_ref}); }
@@ -2696,7 +2694,8 @@ sub handle_connection_up {
 		
 		# Send high priority alert to the syslog
 		&output(1, "Internet connection is back up", 1);
-		&unset_connection_down();
+		if ($debug_bw_changes) { &output(0, "Unsetting connection down flag"); }
+		$connection_down = 0;
 		
 		if ($icmp_adaptive) {
 			if ($icmp_adaptive_idle_suspend) {
@@ -2720,33 +2719,6 @@ sub handle_connection_up {
 		return 1;
 	} else {
 		# Indicate that connection state has not changed
-		return 0;
-	}
-}
-
-# Set a flag in a temp file to indicate that the internet connection is down
-sub set_connection_down {
-	if ($debug_bw_changes) { &output(0, "Setting connection down flag"); }
-
-	if (!$dryrun) {
-		&write_value_to_file($tmp_file_connection_down, 1);
-	}
-}
-
-# Unset the connection down flag to indicate that the internet connection is up
-sub unset_connection_down {
-	if ($debug_bw_changes) { &output(0, "Unsetting connection down flag"); }
-
-	if (!$dryrun) {
-		&write_value_to_file($tmp_file_connection_down, 0);
-	}
-}
-
-# Return 1 if the internet connection is currently flagged as down, otherwise return 0
-sub is_connection_down {
-	if (-e $tmp_file_connection_down) {
-		return &read_value_from_file($tmp_file_connection_down);
-	} else {
 		return 0;
 	}
 }
@@ -2788,30 +2760,6 @@ sub run_sys_command {
 	return $result;
 }
 
-# Gets the value from the specified temp file
-sub read_value_from_file {
-	my ($file) = @_;
-
-	if (-e $file) {
-		open(FILE_HANDLE, '<', $file);
-		my $result = <FILE_HANDLE>;
-		close(FILE_HANDLE);
-		chomp($result);
-		return $result;
-	} else {
-		return "";
-	}
-}
-
-# Write the specified value to the specified file
-sub write_value_to_file {
-	my ($file, $value) = @_;
-
-	open(FILE_HANDLE, '>', $file);
-	print(FILE_HANDLE $value);
-	close(FILE_HANDLE);
-}
-
 # Sets the type and time of the last change for the specified direction
 sub set_last_change {
 	my ($direction, $change) = @_;
@@ -2822,10 +2770,8 @@ sub set_last_change {
 
 	if ($debug_bw_changes) { &output(0, "Setting last change for $direction: $change @ $current_time"); }
 
-	if (!$dryrun) {
-		&write_value_to_file($tmp_file_last_change . "_$direction", $change);
-		&write_value_to_file($tmp_file_last_change_time . "_$direction", $current_time);
-	}
+	$last_change{$direction} = $change;
+	$last_change_time{$direction} = $current_time;
 }	
 
 # Returns the last change type for the specified direction
@@ -2834,7 +2780,7 @@ sub get_last_change_type {
 
 	&check_direction($direction);
 
-	return &read_value_from_file($tmp_file_last_change . "_$direction");
+	return $last_change{$direction};
 }
 
 # Returns the number of seconds since the last change for the specified direction
@@ -2843,13 +2789,7 @@ sub time_since_last_change {
 	
 	&check_direction($direction);
 	
-	my $file = $tmp_file_last_change_time . "_$direction";
-	
-	if (-e $file) {
-		return (gettimeofday() - &read_value_from_file($file));
-	} else {
-		return gettimeofday();
-	}
+	return (gettimeofday() - $last_change_time{$direction})
 }
 
 # Round a value to the nearest integer
