@@ -409,8 +409,8 @@ my $status_summary_auto_frequency = 30;  # i.e. one status summary for every 20 
 # Number of reflectors that have been struckout
 my $struckout_count = 0;
 
-# Flag to indicate whether the reflector pool has been exhausted and reloaded
-my $reflectors_reloaded = 0;
+# Flag to indicate whether the reflector pool has ever been exhausted and reloaded
+my $reflectors_reloaded_ever = 0;
 
 # Flag to indicate whether the ICMP/reflector warmup has completed
 my $icmp_warmup_done = 0;
@@ -3158,7 +3158,7 @@ sub is_icmp_warmup_done {
 		return 1;
 	}
 	
-	if ($reflectors_reloaded) {
+	if ($reflectors_reloaded_ever) {
 		# We've exhausted the reflector pool and reloaded it.
 		# Extending the warmup period won't provide any benefit now.
 		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Warmup stopped due to exhaustion of reflector pool"); }
@@ -3254,17 +3254,20 @@ sub get_reflectors {
 sub get_reflector {
 	my $reflector;
 	
+	my $reflectors_reloaded_here = 0;
+	
 	while(1) {
 		if (scalar(@reflector_pool) > 0) {
 			# Take the next reflector out of the pool
 			$reflector = shift(@reflector_pool);
-		} elsif (!$reflectors_reloaded) {
+		} elsif (!$reflectors_reloaded_here) {
 			# We ran out of reflectors. Re-read the pool from the CSV
 			# and take the first reflector from it.
 			&output(1, "WARNING: Reflector pool exhausted - reloading pool from CSV file", 1);
 			@reflector_pool = &get_reflector_pool($reflectors_csv_file);
 			$reflector = shift(@reflector_pool);
-			$reflectors_reloaded = 1;
+			$reflectors_reloaded_ever = 1;
+			$reflectors_reloaded_here = 1;
 			
 			# Print current set of reflectors with seq numbers - this is useful
 			# for identifying the most reliable reflectors
