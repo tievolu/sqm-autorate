@@ -351,8 +351,8 @@ my $max_bad_pings = &round($max_recent_results * ($bad_ping_pc / 100)) - 1;
 # couple of extra samples does not impact performance because we always search backwards
 # starting with the most recent sample. Redundant samples at the end of the array have
 # no impact beyond a *tiny* increase in memory usage.
-my $max_for_adaptive_idle_delay = $icmp_adaptive ? &round_up($icmp_adaptive_idle_delay / $latency_check_interval) + 2 : 0;
-my $max_for_icmp_results = &round_up( (((max($icmp_interval_loaded, $icmp_interval_idle, 1) * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 2;
+my $max_for_adaptive_idle_delay = $icmp_adaptive ? &round_up($icmp_adaptive_idle_delay / $latency_check_interval) + 10 : 0;
+my $max_for_icmp_results = &round_up( (((max($icmp_interval_loaded, $icmp_interval_idle, 1) * $max_recent_results) + $icmp_timeout) / $latency_check_interval) ) + 10;
 my $max_recent_bandwidth_usages = max($max_for_icmp_results, $max_for_adaptive_idle_delay);
 
 # Create an array to store the recent bandwidth usage statistics, and initialise it
