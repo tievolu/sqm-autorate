@@ -3511,14 +3511,18 @@ sub get_current_bandwidth_from_tc {
 	
 	my @qdiscs = split(/\n/, &run_sys_command("tc -d qdisc"));
 	foreach my $qdisc (@qdiscs) {
-		if ($qdisc =~ / dev $interface .* bandwidth (\d+)(K|M)bit/) {
+		if ($qdisc =~ / dev $interface .* bandwidth (\d+)(G|K|M)bit/) {
 			my $bw = $1;
 			my $bw_units = $2;
 			if ($bw_units eq "K") {
-				return $bw;
-			} elsif ($bw_units eq "M") {
-				return $bw * 1000;
-			}
+                                return $bw;
+                        } elsif ($bw_units eq "M") {
+                                return $bw * 1000;
+                        } elsif ($bw_units eq "G") {
+                                return $bw * 1000000;
+                        } else {
+                                &fatal_error("Unknown bandwidth unit \"$bw_units\" in tc output");
+                        }
 		}
 	}
 }
