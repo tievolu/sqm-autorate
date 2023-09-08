@@ -3500,7 +3500,9 @@ sub get_current_bandwidth {
 # from the SQM config. We should only need to do this once during initialisation.
 sub get_current_bandwidth_from_tc {
 	my ($direction) = @_;
-	
+
+	&check_direction($direction);
+ 
 	my $interface = "";
 	if ($direction eq "download") {
 		$interface = $dl_interfaces[0];
@@ -3511,20 +3513,25 @@ sub get_current_bandwidth_from_tc {
 	
 	my @qdiscs = split(/\n/, &run_sys_command("tc -d qdisc"));
 	foreach my $qdisc (@qdiscs) {
-		if ($qdisc =~ / dev $interface .* bandwidth (\d+)(G|K|M)bit/) {
-			my $bw = $1;
-			my $bw_units = $2;
-			if ($bw_units eq "K") {
-                                return $bw;
-                        } elsif ($bw_units eq "M") {
-                                return $bw * 1000;
-                        } elsif ($bw_units eq "G") {
-                                return $bw * 1000000;
+                if ($qdisc =~ / dev $interface .* bandwidth /) {
+                        if ($qdisc =~ / dev $interface .* bandwidth (\d+)(G|K|M)bit/) {
+                                my $bw = $1;
+                                my $bw_units = $2;
+                                if ($bw_units eq "K") {
+                                        return $bw;
+                                } elsif ($bw_units eq "M") {
+                                        return $bw * 1000;
+                                } elsif ($bw_units eq "G") {
+                                        return $bw * 1000000;
+                                }
                         } else {
-                                &fatal_error("Unknown bandwidth unit \"$bw_units\" in tc output");
+                                &fatal_error("Failed to get bandwidth from tc output for interface \"$interface\":\n$qdisc");
                         }
-		}
-	}
+                }
+        }
+
+        # If we reach here the first interface for the specified direction wasn't listed in the tc output
+        &fatal_error("Failed to get bandwidth from tc output for interface \"$interface\"");
 }
 
 # Get the maximum allowed latency for the specified direction when bandwidth usage is significant
