@@ -56,7 +56,9 @@
 #      '-> If internet connection is not completely down
 #          '-> If load is greater than minimum bandwidth limit
 #              '-> If bandwidth is not at minimum
-#                  '-> Decrease the bandwidth
+#                  '-> If the last decrease occurred sufficiently long ago
+#                      (see $decrease_delay_after_decrease)
+#                      '-> Decrease the bandwidth
 #
 #
 # Latency measurement
@@ -108,6 +110,14 @@
 # caused by bufferbloat, and decreasing the bandwidth won't help. "Bad"
 # pings that are not associated with significant bandwidth usage are
 # ignored when evaluating latency.
+#
+# A delay between decreases is needed to ensure that a decrease in SQM
+# bandwidth has enough time to take effect before we consider
+# decreasing it again. This is especially important (maybe *only*
+# important?) in the download direction, because it takes time for
+# remote senders to realise that they need to slow down the rate at
+# which they are sending packets. The delay is controlled by the
+# "decrease_delay_after_decrease" property.
 #
 # The amount by which the bandwidth is decreased is calculated based on
 # the average bandwidth usage at the times when bad pings were detected.
@@ -280,6 +290,7 @@ my $icmp_timeout                   = &get_config_property("icmp_timeout",       
 my $latency_check_interval         = &get_config_property("latency_check_interval",         0.5);
 my $max_recent_results             = &get_config_property("max_recent_results",             20);
 my $bad_ping_pc                    = &get_config_property("bad_ping_pc",                    25);
+my $decrease_delay_after_decrease  = &get_config_property("decrease_delay_after_decrease",  ($icmp_interval_loaded * $max_recent_results) + 1);
 my $ul_max_loaded_latency          = &get_config_property("ul_max_loaded_latency",          undef);
 my $ul_max_idle_latency            = &get_config_property("ul_max_idle_latency",            $ul_max_loaded_latency);
 my $dl_max_loaded_latency          = &get_config_property("dl_max_loaded_latency",          undef);
@@ -1086,6 +1097,11 @@ sub check_config {
 		$fatal_error = 1;
 	}
 	
+	if ($decrease_delay_after_decrease < 0) {
+		&output(0, "INIT: ERROR: Decrease delay after decrease (\"decrease_delay_after_decrease\") cannot be negative");
+		$fatal_error = 1;
+	}
+	
 	if ($relax_delay < 0) {
 		&output(0, "INIT: ERROR: Relaxation delay (\"relax_delay\") cannot be negative");
 		$fatal_error = 1;
@@ -1431,6 +1447,7 @@ sub print_status_summary {
 		foreach my $direction ("upload", "download") {
 			&is_bandwidth_at_min($direction, 1);
 			&is_increase_allowed($direction, 1);
+			&is_decrease_allowed($direction, 1);
 			if (&get_current_bandwidth($direction) != &get_std_bandwidth($direction)) {
 				&is_relax_allowed($direction, 1);
 			}
@@ -3502,7 +3519,7 @@ sub get_current_bandwidth_from_tc {
 	my ($direction) = @_;
 
 	&check_direction($direction);
- 
+
 	my $interface = "";
 	if ($direction eq "download") {
 		$interface = $dl_interfaces[0];
@@ -3513,25 +3530,25 @@ sub get_current_bandwidth_from_tc {
 	
 	my @qdiscs = split(/\n/, &run_sys_command("tc -d qdisc"));
 	foreach my $qdisc (@qdiscs) {
-                if ($qdisc =~ / dev $interface .* bandwidth /) {
-                        if ($qdisc =~ / dev $interface .* bandwidth (\d+)(G|K|M)bit/) {
-                                my $bw = $1;
-                                my $bw_units = $2;
-                                if ($bw_units eq "K") {
-                                        return $bw;
-                                } elsif ($bw_units eq "M") {
-                                        return $bw * 1000;
-                                } elsif ($bw_units eq "G") {
-                                        return $bw * 1000000;
-                                }
-                        } else {
-                                &fatal_error("Failed to get bandwidth from tc output for interface \"$interface\":\n$qdisc");
-                        }
-                }
-        }
+		if ($qdisc =~ / dev $interface .* bandwidth /) {
+			if ($qdisc =~ / dev $interface .* bandwidth (\d+)(G|K|M)bit/) {
+				my $bw = $1;
+				my $bw_units = $2;
+				if ($bw_units eq "K") {
+					return $bw;
+				} elsif ($bw_units eq "M") {
+					return $bw * 1000;
+				} elsif ($bw_units eq "G") {
+					return $bw * 1000000;
+				}
+			} else {
+				&fatal_error("Failed to get bandwidth from tc output for interface \"$interface\":\n$qdisc");
+			}
+		}
+	}
 
-        # If we reach here the first interface for the specified direction wasn't listed in the tc output
-        &fatal_error("Failed to get bandwidth from tc output for interface \"$interface\"");
+	# If we reach here the first interface for the specified direction wasn't listed in the tc output
+	&fatal_error("Failed to get bandwidth from tc output for interface \"$interface\"");
 }
 
 # Get the maximum allowed latency for the specified direction when bandwidth usage is significant
@@ -3849,6 +3866,17 @@ sub decrease_if_appropriate {
 	if ($log_details_on_bw_changes || $debug_latency_check) { &print_latency_results_details(@{$detailed_results_array_ref}); }
 	if ($log_bw_changes) { &print_latency_results_summary(@{$summary_results_array_ref}); }
 
+	# Check whether a decrease is allowed
+	if (!&is_decrease_allowed($direction, 0)) {
+		my $output = "WARNING: " . ucfirst($direction) . " bandwidth decrease of " . &get_decrease_step_pc($direction) . "% requested, but blocked";
+		if (&get_time_until_decrease_allowed($direction)) {
+			$output .= " due to decrease delay (" . $decrease_delay_after_decrease . "s)";
+		}
+		&output(1, $output);
+		return 0;
+	}
+
+	# Check whether bandwidth is already at minimum
 	if (&is_bandwidth_at_min($direction, 0)) {
 		&output(1, "WARNING: " . ucfirst($direction) . " bandwidth decrease of " . &get_decrease_step_pc($direction) . "% requested, but already at minimum");
 		return 0;
@@ -3888,6 +3916,12 @@ sub is_relax_allowed {
 	if (&get_current_bandwidth($direction) < &get_std_bandwidth($direction) && !is_increase_allowed($direction, 0)) {
 		return 0;
 	}
+	
+	# If the current bandwidth is larger than the standard bandwidth, the relax step
+	# will be a decrease, so we need to check whether a bandwidth decrease is allowed.
+	if (&get_current_bandwidth($direction) > &get_std_bandwidth($direction) && !is_decrease_allowed($direction, 0)) {
+		return 0;
+	}
 
 	# Don't relax if we haven't had at least a full set of pings since the last bandwidth
 	# change. This ensures that our decision is based on an average bandwidth usage over
@@ -3917,8 +3951,7 @@ sub is_increase_allowed {
 	my ($direction, $log_if_disallowed) = @_;
 
 	my ($seconds_until_allowed, $delay) = &get_time_until_increase_allowed($direction);
-	my $time_at_which_allowed = &format_time(gettimeofday() + $seconds_until_allowed);
-
+	
 	my $results_count;
 	{
 		lock(@recent_results);
@@ -3930,7 +3963,7 @@ sub is_increase_allowed {
 			&output(0,
 				sprintf("%s increase disallowed until %s (%.3f/%ds remaining)",
 					ucfirst($direction),
-					$time_at_which_allowed,
+					&format_time(gettimeofday() + $seconds_until_allowed),
 					&round_to_millis($seconds_until_allowed),
 					$delay
 				)
@@ -3947,6 +3980,33 @@ sub is_increase_allowed {
 			# Increase step is set to 0, which means not all recent pings were good.
 			return 0;
 		}
+	}
+
+	# If we reach here there's no reason to prevent an increase
+	return 1;
+}
+
+# Return 1 if a bandwidth decrease for the specified direction is allowed. Return 0
+# if decreasing the bandwidth is disallowed.
+# The current time is provided by the caller to ensure that times printed in the
+# log are consistent
+sub is_decrease_allowed {
+	my ($direction, $log_if_disallowed) = @_;
+
+	my ($seconds_until_allowed, $delay) = &get_time_until_decrease_allowed($direction);
+	
+	if ($seconds_until_allowed > 0) {
+		if ($log_if_disallowed) {		
+			&output(0,
+				sprintf("%s decrease disallowed until %s (%.3f/%ds remaining)",
+					ucfirst($direction),
+					&format_time(gettimeofday() + $seconds_until_allowed),
+					&round_to_millis($seconds_until_allowed),
+					$delay
+				)
+			);
+		}
+		return 0;
 	}
 
 	# If we reach here there's no reason to prevent an increase
@@ -4023,18 +4083,30 @@ sub get_time_until_increase_allowed {
 	my $delay = 0;
 	if (&get_last_change_type($direction) eq "decrease") {
 		$delay = $increase_delay_after_decrease;
-	}
-	if (&get_last_change_type($direction) eq "increase") {	
+	} elsif (&get_last_change_type($direction) eq "increase") {	
 		$delay = $increase_delay_after_increase;
 	}
 	
-	my $result = $delay - &time_since_last_change($direction);
+	return (max(0, $delay - &time_since_last_change($direction)), $delay);	
+}
 
-	if ($result > 0) {
-		return ($result, $delay);
-	} else {
-		return (0, $delay);
-	}	
+# Returns the number of seconds until we will be allowed to decrease the bandwidth
+# for the specified direction.
+# A delay between decreases is needed to ensure that a decrease in SQM bandwidth has enough
+# time to take effect before we consider decreasing it again.
+# Returns an array containing:
+#   - The number of seconds until a bandwidth decrease is allowed for the specified direction
+#   - The length of the delay that we are respecting (right now this is always
+#     $decrease_delay_after_decrease, as there is no other delay that prevents a decrease)
+sub get_time_until_decrease_allowed {
+	my ($direction) = @_;
+
+	my $delay = 0;
+	if (&get_last_change_type($direction) eq "decrease") {
+		$delay = $decrease_delay_after_decrease;
+	}
+	
+	return (max(0, $delay - &time_since_last_change($direction)), $delay);
 }
 
 # Adjust the bandwidth by $relax_pc towards the standard bandwidth
@@ -4251,6 +4323,11 @@ sub decrease_bandwidth {
 			my ($seconds_until_allowed, $delay) = &get_time_until_increase_allowed($direction);
 			my $time_at_which_allowed = &format_time(gettimeofday() + $seconds_until_allowed);
 			&output(1, "Increases disallowed until $time_at_which_allowed (" . $delay . "s)");
+			
+			# Describe the new decrease delay
+			my ($seconds_until_allowed, $delay) = &get_time_until_decrease_allowed($direction);
+			my $time_at_which_allowed = &format_time(gettimeofday() + $seconds_until_allowed);
+			&output(1, "Decreases disallowed until $time_at_which_allowed (" . $delay . "s)");
 			
 			# If the bandwidth is not equal to the standard, describe the new relaxation delay
 			if ($new_bandwidth != &get_std_bandwidth($direction) && $relax_delay > 0) {
