@@ -1635,7 +1635,7 @@ sub check_latency {
 	&update_bandwidth_usage_stats(&get_wan_bytes());
 	
 	# Adaptive ICMP
-	if ($icmp_adaptive && &is_icmp_warmup_done()) {
+	if ($icmp_adaptive && &is_icmp_warmup_done(1)) {
 		my $return_bandwidth_results = 0;
 		if (&is_connection_idle()) {
 			# Connection down scenario is handled separately.
@@ -3171,9 +3171,16 @@ sub set_icmp_adaptive_loaded {
 # Check whether the script has been active long enough to filter out
 # any obviously bad reflectors from the initial set
 sub is_icmp_warmup_done {
+	my ($recheck) = @_;
+	
 	if ($icmp_warmup_done) {
 		# Warmup has already completed
 		return 1;
+	}
+	
+	if (!$recheck) {
+		# Don't re-check all the conditions. Just return the result of the last check.
+		return $icmp_warmup_done;
 	}
 	
 	if (!$icmp_warmup_done && $reflectors_reloaded_ever) {
@@ -3880,8 +3887,7 @@ sub decrease_if_appropriate {
 		my $output = "WARNING: " . ucfirst($direction) . " bandwidth decrease of " . &get_decrease_step_pc($direction) . "% requested, but blocked";
 		if (&get_time_until_decrease_allowed($direction)) {
 			$output .= " due to decrease delay (" . $decrease_delay_after_decrease . "s)";
-		}
-		if (!is_icmp_warmup_done) {
+		} elsif (!&is_icmp_warmup_done(0)) {
 			$output .= " during warmup phase";
 		}
 		&output(1, $output);
@@ -3994,7 +4000,7 @@ sub is_increase_allowed {
 		}
 	}
 	
-	if (!is_icmp_warmup_done) {
+	if (!&is_icmp_warmup_done(0)) {
 		if ($log_if_disallowed) {		
 			&output(0, ucfirst($direction) . " increase disallowed during warmup phase");
 		}
@@ -4028,7 +4034,7 @@ sub is_decrease_allowed {
 		return 0;
 	}
 	
-	if (!is_icmp_warmup_done) {
+	if (!&is_icmp_warmup_done(0)) {
 		if ($log_if_disallowed) {		
 			&output(0, ucfirst($direction) . " decrease disallowed during warmup phase");
 		}
