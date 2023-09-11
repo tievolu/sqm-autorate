@@ -25,9 +25,11 @@ dl_interface.[n]                                                                
 dl_bw_minimum                                                                     kilobits/s    Download SQM bandwidth will never be reduced below this value
 dl_bw_standard                                                                    kilobits/s    Download SQM bandwidth will relax to this value when there is no significant bandwidth usage
 dl_bw_maximum                                                                     kilobits/s    Download SQM bandwidth will never be increased above this value
+dl_bw_warmup                    $dl_bw_minimum                                    kilobits/s    Download SQM bandwidth during adaptive ICMP warmup phase
 ul_bw_minimum                                                                     kilobits/s    Upload SQM bandwidth will never be reduced below this value
 ul_bw_standard                                                                    kilobits/s    Upload SQM bandwidth will relax to this value when there is no significant bandwidth usage
 ul_bw_maximum                                                                     kilobits/s    Upload SQM bandwidth will never be increased above this value
+ul_bw_warmup                    $ul_bw_minimum                                    kilobits/s    Upload SQM bandwidth during adaptive ICMP warmup phase
 ul_bw_idle_threshold            $ul_bw_minimum                                    kilobits/s    If upload bandwidth is below this level, upload will be considered idle
 dl_bw_idle_threshold            $dl_bw_minimum                                    kilobits/s    If download bandwidth is below this level, download will be considered idle
 
