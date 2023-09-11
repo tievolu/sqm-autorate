@@ -268,9 +268,11 @@ my $wan_interface                  = &get_config_property("wan_interface",      
 my $dl_bw_minimum                  = &get_config_property("dl_bw_minimum",                  undef);
 my $dl_bw_standard                 = &get_config_property("dl_bw_standard",                 undef);
 my $dl_bw_maximum                  = &get_config_property("dl_bw_maximum",                  undef);
+my $dl_bw_warmup                   = &get_config_property("dl_bw_warmup",                   $dl_bw_minimum);
 my $ul_bw_minimum                  = &get_config_property("ul_bw_minimum",                  undef);
 my $ul_bw_standard                 = &get_config_property("ul_bw_standard",                 undef);
 my $ul_bw_maximum                  = &get_config_property("ul_bw_maximum",                  undef);
+my $ul_bw_warmup                   = &get_config_property("ul_bw_warmup",                   $ul_bw_minimum);
 my $increase_factor                = &get_config_property("increase_factor",                1);
 my $increase_min_pc                = &get_config_property("increase_min_pc",                1);
 my $increase_max_pc                = &get_config_property("increase_max_pc",                25);
@@ -423,8 +425,9 @@ my $struckout_count = 0;
 # Flag to indicate whether the reflector pool has ever been exhausted and reloaded
 my $reflectors_reloaded_ever = 0;
 
-# Flag to indicate whether the ICMP/reflector warmup has completed
-my $icmp_warmup_done = 0;
+# Flag to indicate whether the ICMP/reflector warmup has completed.
+# This will be set during initialisation.
+my $icmp_warmup_done;
 
 #######################################################################################
 # Initialisation
@@ -512,10 +515,20 @@ my $sender_thread = &create_sender_thread($fd);
 $current_bandwidth_ul = &get_current_bandwidth_from_tc("upload");
 $current_bandwidth_dl = &get_current_bandwidth_from_tc("download");
 
-# Check whether the current bandwidths are within the min/max range, and if
-# not, fix them. This can happen if the min/max settings are modified
-# manually outside of this script.
-&ensure_within_min_max();
+if (!$icmp_adaptive || $reflector_strikeout_threshold == 0) {
+	# Don't warmup if adaptive ICMP isn't enabled, or if reflector strikes aren't enabled.
+	# Check whether the current bandwidths are within the min/max range, and if
+	# not, fix them. This can happen if the min/max settings are modified
+	# manually outside of this script.
+	&ensure_within_min_max();
+	$icmp_warmup_done = 1;
+} else {
+	# Print a message and set bandwidth for warmup phase
+	&output(0, "Starting warmup phase - setting warmup bandwidths");
+	&set_bandwidth("download", $dl_bw_warmup);
+	&set_bandwidth("upload", $ul_bw_warmup);
+	$icmp_warmup_done = 0;
+}
 
 #######################################################################################
 # Main latency checking loop
@@ -3163,63 +3176,59 @@ sub is_icmp_warmup_done {
 		return 1;
 	}
 	
-	if (!$icmp_adaptive) {
-		# Adaptive ICMP is disabed. No need to warm up.
-		$icmp_warmup_done = 1;
-		return 1;
-	}
-	
-	if ($reflector_strikeout_threshold == 0) {
-		# Strikes are disabled - mark warmup as done and return
-		$icmp_warmup_done = 1;
-		return 1;
-	}
-	
-	if ($reflectors_reloaded_ever) {
+	if (!$icmp_warmup_done && $reflectors_reloaded_ever) {
 		# We've exhausted the reflector pool and reloaded it.
 		# Extending the warmup period won't provide any benefit now.
-		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Warmup stopped due to exhaustion of reflector pool"); }
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Stopping warmup due to exhaustion of reflector pool"); }
 		$icmp_warmup_done = 1;
-		return 1;		
-	}
+	}	
 	
 	# Check whether we've sent a request to all of the reflectors at least
 	# enough times for obviously bad reflectors in the initial set to be
 	# struckout and replaced
 	my $warmup_request_threshold = $number_of_reflectors * ($reflector_strikeout_threshold + 1);
-	if ($icmp_request_count < $warmup_request_threshold) {
+	if (!$icmp_warmup_done && $icmp_request_count < $warmup_request_threshold) {
 		my $icmp_requests_remaining = $warmup_request_threshold - $icmp_request_count;
 		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: $icmp_requests_remaining of $warmup_request_threshold ICMP requests remaining"); }
 		return 0;
 	}
 		
 	# Go through all the reflectors and check for strikes
-	lock(%reflector_ips);
-	my $strike_count = 0;
-	foreach my $ip (keys(%reflector_ips)) {
-		if ($debug_icmp_adaptive) {
-			# Update the strike count and carry on
-			$strike_count += &get_strike_count($ip, "upload") + &get_strike_count($ip, "download");
-		} elsif (&get_strike_count($ip, "upload") || &get_strike_count($ip, "download")) {
-			# Fast (none debug) path. Found a reflector strike => keep warming up
+	if (!$icmp_warmup_done) {
+		lock(%reflector_ips);
+		my $strike_count = 0;
+		foreach my $ip (keys(%reflector_ips)) {
+			if ($debug_icmp_adaptive) {
+				# Update the strike count and carry on
+				$strike_count += &get_strike_count($ip, "upload") + &get_strike_count($ip, "download");
+			} elsif (&get_strike_count($ip, "upload") || &get_strike_count($ip, "download")) {
+				# Fast (none debug) path. Found a reflector strike => keep warming up
+				return 0;
+			}
+		}
+	
+		if ($debug_icmp_adaptive && $strike_count > 0) {
+			# Found at least one reflector strike. Print debug and keep warming up.
+			&output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Active strikes remaining: $strike_count");
 			return 0;
 		}
 	}
 	
-	if ($debug_icmp_adaptive && $strike_count > 0) {
-		# Found at least one reflector strike. Print debug and keep warming up.
-		&output(0, "ICMP ADAPTIVE DEBUG: WARMUP: Active strikes remaining: $strike_count");
-		return 0;
-	}
+	# If we reach here the warmup phase has just completed.
+	# Print a message to the log and set standard bandwidths.
 	
-	# If we reach here there were no strikes against any reflectors
-	if ($debug_icmp_adaptive) {
-		my $warmup_duration = int(gettimeofday() - $script_start_time);
-		my $hours = int(($warmup_duration % 86400) / 3600);
-		my $mins = int(($warmup_duration % 86400 % 3600) / 60);
-		my $secs = $warmup_duration % 86400 % 3600 % 60;
-		&output(0, "ICMP ADAPTIVE DEBUG: WARMUP: No active strikes => warmup completed in " . sprintf("%02d:%02d:%02d", $hours, $mins, $secs));
-	}
+	my $warmup_duration = int(gettimeofday() - $script_start_time);
+	my $hours = int(($warmup_duration % 86400) / 3600);
+	my $mins = int(($warmup_duration % 86400 % 3600) / 60);
+	my $secs = $warmup_duration % 86400 % 3600 % 60;
+	&output(0, "Warmup phase completed in " . sprintf("%02d:%02d:%02d", $hours, $mins, $secs) . " - setting standard bandwidths");
+	
+	&set_bandwidth("download", $dl_bw_standard);
+	&set_bandwidth("upload", $ul_bw_standard);
+	
+	# Print a status summary on the next cycle
+	$force_status_summary = 1;
+		
 	$icmp_warmup_done = 1;
 	return 1;
 }
@@ -3872,6 +3881,9 @@ sub decrease_if_appropriate {
 		if (&get_time_until_decrease_allowed($direction)) {
 			$output .= " due to decrease delay (" . $decrease_delay_after_decrease . "s)";
 		}
+		if (!is_icmp_warmup_done) {
+			$output .= " during warmup phase";
+		}
 		&output(1, $output);
 		return 0;
 	}
@@ -3981,6 +3993,13 @@ sub is_increase_allowed {
 			return 0;
 		}
 	}
+	
+	if (!is_icmp_warmup_done) {
+		if ($log_if_disallowed) {		
+			&output(0, ucfirst($direction) . " increase disallowed during warmup phase");
+		}
+		return 0;
+	}
 
 	# If we reach here there's no reason to prevent an increase
 	return 1;
@@ -4005,6 +4024,13 @@ sub is_decrease_allowed {
 					$delay
 				)
 			);
+		}
+		return 0;
+	}
+	
+	if (!is_icmp_warmup_done) {
+		if ($log_if_disallowed) {		
+			&output(0, ucfirst($direction) . " decrease disallowed during warmup phase");
 		}
 		return 0;
 	}
