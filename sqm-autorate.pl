@@ -4357,8 +4357,8 @@ sub decrease_bandwidth {
 			&output(1, "Increases disallowed until $time_at_which_allowed (" . $delay . "s)");
 			
 			# Describe the new decrease delay
-			my ($seconds_until_allowed, $delay) = &get_time_until_decrease_allowed($direction);
-			my $time_at_which_allowed = &format_time(gettimeofday() + $seconds_until_allowed);
+			($seconds_until_allowed, $delay) = &get_time_until_decrease_allowed($direction);
+			$time_at_which_allowed = &format_time(gettimeofday() + $seconds_until_allowed);
 			&output(1, "Decreases disallowed until $time_at_which_allowed (" . $delay . "s)");
 			
 			# If the bandwidth is not equal to the standard, describe the new relaxation delay
