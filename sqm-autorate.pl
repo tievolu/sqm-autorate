@@ -1472,7 +1472,7 @@ sub print_status_summary {
 	my $threshold_summary = "";
 	
 	$threshold_summary .= sprintf(
-		"Decrease thresholds - UL: >%dms / >%.3fMbps, DL: >%dms / >%.3fMbps, Bad pings (per target): >%d/%d\n",
+		"Decrease thresholds - UL: >%dms / >%.3fMbps, DL: >%dms / >%.3fMbps, Bad pings: >%d/%d\n",
 		$ul_max_loaded_latency,
 		&kbps_to_mbps($ul_bw_idle_threshold),
 		$dl_max_loaded_latency,
