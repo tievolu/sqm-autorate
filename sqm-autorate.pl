@@ -204,26 +204,27 @@ use constant ICMP_TIMED_OUT         => 99999;
 # Shared global variables
 ##################################################################################
 
-my $pid                    :shared;    # Process ID
-my $cid                    :shared;    # Latency check cycle ID (incremented with each latency check)
-my $output_lock            :shared;    # Controls access to output streams to avoid interleaving
-my $suspend_icmp_sender    :shared;    # Tells the ICMP Sender thread to suspend/resume itself
-my $suspend_icmp_receiver  :shared;    # Tells the ICMP Receiver thread to suspend/resume itself
-my $sender_suspended       :shared;    # Indicates that the ICMP Sender thread is suspended
-my $receiver_suspended     :shared;    # Indicates that the ICMP Receiver thread is suspended
-my $icmp_interval          :shared;    # ICMP interval
-my $icmp_request_count     :shared;
-my $icmp_request_bytes     :shared;
-my $icmp_response_count    :shared;
-my $icmp_response_bytes    :shared;    
-my %icmp_timeout_times     :shared;    # Time at which a pending ICMP request will time out
-my %icmp_sent_times        :shared;    # Time at which an ICMP request was sent
-my @recent_results         :shared;    # Recent ICMP results
-my %reflector_ips          :shared;    # ICMP reflector IP addresses
-my %reflector_packet_ids   :shared;    # Packet ID for each ICMP reflector
-my %reflector_seqs         :shared;    # Current sequence ID for each ICMP reflector
-my %reflector_offsets      :shared;    # Time offset for each ICMP reflector
-my %reflector_minimum_rtts :shared;    # Minimum RTT time seen for each ICMP reflector (used when calculating the offset)
+my $pid                      :shared;  # Process ID
+my $cid                      :shared;  # Latency check cycle ID (incremented with each latency check)
+my $output_lock              :shared;  # Controls access to output streams to avoid interleaving
+my $warmup_request_threshold :shared;  # Minimum number of pings required for warmup phase
+my $suspend_icmp_sender      :shared;  # Tells the ICMP Sender thread to suspend/resume itself
+my $suspend_icmp_receiver    :shared;  # Tells the ICMP Receiver thread to suspend/resume itself
+my $sender_suspended         :shared;  # Indicates that the ICMP Sender thread is suspended
+my $receiver_suspended       :shared;  # Indicates that the ICMP Receiver thread is suspended
+my $icmp_interval            :shared;  # ICMP interval
+my $icmp_request_count       :shared;
+my $icmp_request_bytes       :shared;
+my $icmp_response_count      :shared;
+my $icmp_response_bytes      :shared;    
+my %icmp_timeout_times       :shared;  # Time at which a pending ICMP request will time out
+my %icmp_sent_times          :shared;  # Time at which an ICMP request was sent
+my @recent_results           :shared;  # Recent ICMP results
+my %reflector_ips            :shared;  # ICMP reflector IP addresses
+my %reflector_packet_ids     :shared;  # Packet ID for each ICMP reflector
+my %reflector_seqs           :shared;  # Current sequence ID for each ICMP reflector
+my %reflector_offsets        :shared;  # Time offset for each ICMP reflector
+my %reflector_minimum_rtts   :shared;  # Minimum RTT time seen for each ICMP reflector (used when calculating the offset)
 
 # Initialise the process ID and cycle ID
 $pid = "$$";
@@ -491,6 +492,15 @@ if ($status_summary_interval eq "auto") {
 if ($reflector_strike_ttl eq "auto") {
 	&update_reflector_strike_ttl();
 	&output(0, "INIT: Reflector strike TTL set to " . $reflector_strike_ttl . "s");
+}
+
+# Set the number of ICMP requests required to ensure that obviously
+# bad reflectors can be eliminated during the warmup phase.
+# We shouldn't need to lock this here because we haven't created the
+# ICMP sender thread yet, but do it anyway.
+{
+	lock($warmup_request_threshold);
+	$warmup_request_threshold = $number_of_reflectors * ($reflector_strikeout_threshold + 1);
 }
 
 # Initialize ICMP packet/byte counters
@@ -2054,6 +2064,13 @@ sub send_icmp_timestamp_request {
 		lock($icmp_request_bytes);
 		$icmp_request_count++;
 		$icmp_request_bytes += 20;
+		
+		lock($warmup_request_threshold);
+		if ($connection_down && &is_icmp_warmup_done(0)) {
+			# Increment the warmup threshold, which effectively means we ignore
+			# pings that are sent while the connection is down
+			$warmup_request_threshold++;
+		}
 	}
 
 	# Return the ID and sequence number
@@ -2732,6 +2749,10 @@ sub handle_connection_up {
 				# Reset ICMP interval to $icmp_interval_loaded
 				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_loaded" . "s"); }
 				$icmp_interval = $icmp_interval_loaded;
+			} elsif (!&is_icmp_warmup_done(0)) {
+				# Still in the warmup phase
+				if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Setting ICMP interval to $icmp_interval_loaded" . "s for warmup phase"); }
+				&set_icmp_adaptive_loaded();
 			}
 		}
 
@@ -2739,8 +2760,13 @@ sub handle_connection_up {
 		# Either way the recent latency results will be cleared so
 		# we start from scratch on the next cycle.
 		if (!&is_bandwidth_at_std("upload") || !&is_bandwidth_at_std("download")) {
-			&output(0, "Resetting bandwidth after internet connection outage");
-			&reset_bandwidth();
+			if (&is_icmp_warmup_done(0)) {
+				&output(0, "Resetting bandwidth after internet connection outage");
+				&reset_bandwidth();
+			} else {
+				&output(0, "Still in warmup phase => not resetting bandwidth after internet connection outage");
+				&clear_latency_results();
+			}				
 		} else {
 			&clear_latency_results();
 		}
@@ -3183,6 +3209,19 @@ sub is_icmp_warmup_done {
 		return $icmp_warmup_done;
 	}
 	
+	# Check that the warmup bandwidths are set correctly
+	if (!$icmp_warmup_done) {
+		if (&get_current_bandwidth("upload") != $ul_bw_warmup) {
+			&output(0, "Incorrect upload warmup bandwidth (" . &get_current_bandwidth("upload") . ") - resetting");
+			&set_bandwidth("upload", $ul_bw_warmup);
+		}
+		
+		if (&get_current_bandwidth("download") != $dl_bw_warmup) {
+			&output(0, "Incorrect download warmup bandwidth (" . &get_current_bandwidth("upload") . ") - resetting");
+			&set_bandwidth("download", $dl_bw_warmup);
+		}
+	}
+	
 	if (!$icmp_warmup_done && $reflectors_reloaded_ever) {
 		# We've exhausted the reflector pool and reloaded it.
 		# Extending the warmup period won't provide any benefit now.
@@ -3193,11 +3232,13 @@ sub is_icmp_warmup_done {
 	# Check whether we've sent a request to all of the reflectors at least
 	# enough times for obviously bad reflectors in the initial set to be
 	# struckout and replaced
-	my $warmup_request_threshold = $number_of_reflectors * ($reflector_strikeout_threshold + 1);
-	if (!$icmp_warmup_done && $icmp_request_count < $warmup_request_threshold) {
-		my $icmp_requests_remaining = $warmup_request_threshold - $icmp_request_count;
-		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: $icmp_requests_remaining of $warmup_request_threshold ICMP requests remaining"); }
-		return 0;
+	if (!$icmp_warmup_done) {
+		lock($warmup_request_threshold);	
+		if ($icmp_request_count < $warmup_request_threshold) {
+			my $icmp_requests_remaining = $warmup_request_threshold - $icmp_request_count;
+			if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: WARMUP: $icmp_requests_remaining of $warmup_request_threshold ICMP requests remaining"); }
+			return 0;
+		}
 	}
 		
 	# Go through all the reflectors and check for strikes
