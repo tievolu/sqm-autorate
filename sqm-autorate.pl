@@ -3217,7 +3217,7 @@ sub is_icmp_warmup_done {
 		}
 		
 		if (&get_current_bandwidth("download") != $dl_bw_warmup) {
-			&output(0, "Incorrect download warmup bandwidth (" . &get_current_bandwidth("upload") . ") - resetting");
+			&output(0, "Incorrect download warmup bandwidth (" . &get_current_bandwidth("download") . ") - resetting");
 			&set_bandwidth("download", $dl_bw_warmup);
 		}
 	}
