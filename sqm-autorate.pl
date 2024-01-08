@@ -3186,7 +3186,7 @@ sub set_icmp_adaptive_loaded {
 		lock ($icmp_interval);
 		$icmp_interval = $icmp_interval_loaded;
 		&update_reflector_strike_ttl();
-		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - ICMP interval set to $icmp_interval_idle" . "s, reflector strike TTL set to " . $reflector_strike_ttl . "s"); }
+		if ($debug_icmp_adaptive) { &output(0, "ICMP ADAPTIVE DEBUG: Connection is loaded - ICMP interval set to $icmp_interval_loaded" . "s, reflector strike TTL set to " . $reflector_strike_ttl . "s"); }
 	}
 	&update_auto_summary_intervals();
 	
