@@ -2993,13 +2993,14 @@ sub get_wan_bytes {
 		}
 		
 		# If we reach here we couldn't read the contents of /proc/net/dev properly
-		&output(0, "ERROR: Failed to get WAN bytes!")
+		# This can happen when the WAN interface is restarting
+		&output(0, "WARNING: Failed to get WAN bytes!")
 	} else {
 		# If we reach here we couldn't even open /proc/net/dev
 		&output(0, "ERROR: Failed to open /proc/net/dev WAN bytes!");
 	}
 	
-	# If we reach here something went badly wrong. Return an empty array to indicate an error.
+	# If we reach here something went wrong. Return an empty array to indicate an error.
 	return ();
 }
 
@@ -3021,6 +3022,14 @@ sub kbps_to_mbps {
 sub update_bandwidth_usage_stats {
 	# Get the current time and WAN bytes stats
 	my ($current_time, $current_wan_bytes_ref) = &get_wan_bytes();
+
+	if (!defined($current_time) || !defined($current_wan_bytes_ref)) {
+		# Something went wrong in &get_wan_bytes()
+		# Probably just a glitch (e.g. WAN interface restarting)
+		# Just do nothing and return
+		return;
+	}
+
 	my %current_wan_bytes = %{$current_wan_bytes_ref};
 	my $wan_bytes_ul = $current_wan_bytes{"upload"};
 	my $wan_bytes_dl = $current_wan_bytes{"download"};
