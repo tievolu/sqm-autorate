@@ -2992,9 +2992,14 @@ sub get_wan_bytes {
 			}
 		}
 		
-		# If we reach here we couldn't read the contents of /proc/net/dev properly
-		# This can happen when the WAN interface is restarting
-		&output(0, "WARNING: Failed to get WAN bytes!")
+		# If we reach here we couldn't read the WAN interface data from
+                # /proc/net/dev. This happens when the WAN interface doesn't exist, which
+                # is normal for PPPOE connections when the PPPOE tunnel isn't connected
+                # e.g. when the internet connection is down, or the router has only just
+                # booted up.
+                if (!$connection_down) {
+                        &output(0, "WARNING: Failed to get WAN bytes!");
+                }
 	} else {
 		# If we reach here we couldn't even open /proc/net/dev
 		&output(0, "ERROR: Failed to open /proc/net/dev WAN bytes!");
