@@ -1040,8 +1040,8 @@ sub check_config {
 	if (!defined($wan_interface) || $wan_interface eq "") {
 		&output(0, "INIT: ERROR: WAN interface (\"wan_interface\") not set");
 		$fatal_error = 1;
-	} elsif (scalar(&get_wan_bytes()) == 0) {
-		&output(0, "INIT: ERROR: Failed to get statistics for WAN interface \"$wan_interface\" from /proc/net/dev");
+	} elsif (`ip link show` =~ /(\d+):\t$wan_interface: /) {
+		&output(0, "INIT: ERROR: WAN interface \"$wan_interface\" not found");
 		$fatal_error = 1;
 	}
 	
