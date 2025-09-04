@@ -3049,14 +3049,24 @@ sub update_bandwidth_usage_stats {
 		# Get the most recent WAN bytes stats from the first element in @recent_bandwidth_usages
 		my (undef, $previous_end_time, undef, undef, $previous_wan_bytes_ul, $previous_wan_bytes_dl) = @{$recent_bandwidth_usages[0]};
 
-		# Calculate the bandwidth usage since the previous sample and store it
+		# Calculate the bandwidth usage since the previous sample.
 		# Bandwidth usage samples are ordered from newest -> oldest
-		# so we only need to store the start time of each period
+		# so we only need to store the start time of each period.
 		my $bw_usage_ul = &get_kbps($wan_bytes_ul - $previous_wan_bytes_ul, $current_time - $previous_end_time);
 		my $bw_usage_dl = &get_kbps($wan_bytes_dl - $previous_wan_bytes_dl, $current_time - $previous_end_time);
+
+		# For certain connection types (e.g. pppoe), when the connection has a dropout
+		# the WAN interface will be destroyed and recreated, which resets the WAN
+		# interface byte counter. When this happens just use the raw count instead.
+		if ($bw_usage_ul < 0 || $bw_usage_dl < 0) {
+			$bw_usage_ul = &get_kbps($wan_bytes_ul, $current_time - $previous_end_time);
+			$bw_usage_dl = &get_kbps($wan_bytes_dl, $current_time - $previous_end_time);
+		}
+
+		# Create the bandwidth usage sample array
 		@bandwidth_usage = ($previous_end_time, $current_time, $bw_usage_ul, $bw_usage_dl, $wan_bytes_ul, $wan_bytes_dl);
 	}
-	
+
 	# Add the new bandwidth usage sample to the beginning of @recent_bandwidth_usages
 	unshift(@recent_bandwidth_usages, \@bandwidth_usage);
 	
