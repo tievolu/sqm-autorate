@@ -63,8 +63,6 @@ number_of_reflectors            30                                              
 reflector_strikeout_threshold   3                                                               If a reflector performs poorly this many times within reflector_strike_ttl, we'll replace it (0 disables reflector strikes)
 reflector_strike_ttl            auto                                                            Reflector strikes expire this many seconds after the associated ICMP response was received (or when it timed out). "auto" sets this to (number_of_reflectors / (1 / icmp_interval_[idle|loaded])) * (reflector_strikeout_threshold + 1).
 
-tmp_folder                      /tmp                                                            Location for temporary files describing the most recent bandwidth change and time
-
 log_file                                                                                        Log file path/name. If this is not set, logging to a file will be disabled. Note: Log rotation must be handled separately (e.g. with logrotate)
 use_syslog                      1                                                 boolean       If use_syslog == 1, important messages will be sent to the syslog
 latency_check_summary_interval  auto                                              seconds       Interval between summary latency check results output. 0 disables. "auto" sets this to max_recent_results * icmp_interval_[idle|loaded].
