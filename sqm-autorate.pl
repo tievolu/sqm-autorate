@@ -304,7 +304,6 @@ my $reflectors_csv_file            = &get_config_property("reflectors_csv_file",
 my $number_of_reflectors           = &get_config_property("number_of_reflectors",           undef);
 my $reflector_strikeout_threshold  = &get_config_property("reflector_strikeout_threshold",  3);
 my $reflector_strike_ttl           = &get_config_property("reflector_strike_ttl",           "auto");
-my $tmp_folder                     = &get_config_property("tmp_folder",                     "/tmp");
 my $log_file                       = &get_config_property("log_file",                       undef);
 my $use_syslog                     = &get_config_property("use_syslog",                     1);
 my $latency_check_summary_interval = &get_config_property("latency_check_summary_interval", "auto");
@@ -1701,11 +1700,19 @@ sub check_latency {
 		my $dl_strike = -1;
 		my $ignore_result = 0;
 
+		# Check that we were able to get the bandwidth usages.
+		# If not we'll ignore this result (this should only be a temporary glitch).
+		if (!defined($ul_bw) || !defined($dl_bw)) {
+			$ul_bw = 0;
+			$dl_bw = 0;
+			$ignore_result = 1;
+		}
+
 		# Check for strike conditions in both directions and record strikes if necessary.
 		# We need to do this first because this might result in this reflector striking
 		# out, in which case we want to ignore the result.
 		# A strike is (by definition) a spurious bad result, so we mark the result as "good".
-		if ($reflector_strikeout_threshold != 0) { # if $reflector_strikeout_threshold == 0 strikes are disabled
+		if (!$ignore_result && $reflector_strikeout_threshold != 0) { # if $reflector_strikeout_threshold == 0 strikes are disabled
 			if ($ul_time == ICMP_TIMED_OUT || $ul_time == ICMP_INVALID || $ul_time > $ul_max_idle_latency) {
 				if ($ul_time == ICMP_INVALID || $ul_bw < $ul_bw_idle_threshold) {
 					&record_strike($ip, $packet_id, $seq, ($finish_time + $reflector_strike_ttl), "upload");
@@ -1734,7 +1741,7 @@ sub check_latency {
 			}
 		}
 
-		# Check whether we should ignore this result
+		# Additional checks to determine whether this result should be ignored
 		
 		# This first check needs to be done separately to minimise the scope of the %reflector_ips
 		# lock, to make sure we're not holding it if/when we call &replace_reflector()
@@ -2791,6 +2798,8 @@ sub check_direction {
 }
 
 # Runs a system command and returns STDOUT and STDERR in a single string
+# Note: This uses backticks which are not thread-safe. Use this only on the main thread.
+#       An alternative would be to use IPC::Run, but this is a pain to install on OpenWrt.
 sub run_sys_command {
 	my ($command) = @_;
 	
@@ -2993,13 +3002,13 @@ sub get_wan_bytes {
 		}
 		
 		# If we reach here we couldn't read the WAN interface data from
-                # /proc/net/dev. This happens when the WAN interface doesn't exist, which
-                # is normal for PPPOE connections when the PPPOE tunnel isn't connected
-                # e.g. when the internet connection is down, or the router has only just
-                # booted up.
-                if (!$connection_down) {
-                        &output(0, "WARNING: Failed to get WAN bytes!");
-                }
+		# /proc/net/dev. This happens when the WAN interface doesn't exist, which
+		# is normal for PPPOE connections when the PPPOE tunnel isn't connected
+		# e.g. when the internet connection is down, or the router has only just
+		# booted up.
+		if (!$connection_down) {
+			&output(0, "WARNING: Failed to get WAN bytes!");
+		}
 	} else {
 		# If we reach here we couldn't even open /proc/net/dev
 		&output(0, "ERROR: Failed to open /proc/net/dev WAN bytes!");
@@ -3049,9 +3058,9 @@ sub update_bandwidth_usage_stats {
 		# Get the most recent WAN bytes stats from the first element in @recent_bandwidth_usages
 		my (undef, $previous_end_time, undef, undef, $previous_wan_bytes_ul, $previous_wan_bytes_dl) = @{$recent_bandwidth_usages[0]};
 
-		# Calculate the bandwidth usage since the previous sample.
+		# Calculate the bandwidth usage since the previous sample and store it
 		# Bandwidth usage samples are ordered from newest -> oldest
-		# so we only need to store the start time of each period.
+		# so we only need to store the start time of each period
 		my $bw_usage_ul = &get_kbps($wan_bytes_ul - $previous_wan_bytes_ul, $current_time - $previous_end_time);
 		my $bw_usage_dl = &get_kbps($wan_bytes_dl - $previous_wan_bytes_dl, $current_time - $previous_end_time);
 
@@ -3063,7 +3072,6 @@ sub update_bandwidth_usage_stats {
 			$bw_usage_dl = &get_kbps($wan_bytes_dl, $current_time - $previous_end_time);
 		}
 
-		# Create the bandwidth usage sample array
 		@bandwidth_usage = ($previous_end_time, $current_time, $bw_usage_ul, $bw_usage_dl, $wan_bytes_ul, $wan_bytes_dl);
 	}
 
@@ -3098,10 +3106,16 @@ sub get_bandwidth_usage_at {
 		}
 	}
 	
-	# We didn't find a matching bandwidth usage sample
-	# This should never happen. If it does we have a problem with how we're calculating $max_recent_bandwidth_usages.
+	# We didn't find a matching bandwidth usage sample.
+	# This should never happen under normal circumstances, so it is probably just
+	# a glitch (e.g. a system time discontinuity). We return undefined and let the
+	# caller decide what to do.
+	# If this keeps happening it would indicate a problem with how
+	# $max_recent_bandwidth_usages is calculated.
 	my ($earliest_start_time, undef, undef, undef) = @{$recent_bandwidth_usages[scalar(@recent_bandwidth_usages) - 1]};
-	&fatal_error("Failed to get $direction bandwidth at ". &format_time($time) . ". Earliest of " . scalar(@recent_bandwidth_usages) . " (max $max_recent_bandwidth_usages) bandwidth samples' start time = " . &format_time($earliest_start_time));
+	&output(1, "WARNING: Failed to get $direction bandwidth at ". &format_time($time) . ". Earliest of " . scalar(@recent_bandwidth_usages) . " (max $max_recent_bandwidth_usages) bandwidth samples' start time = " . &format_time($earliest_start_time), 1);
+
+	return undef;
 }
 
 # Check whether the connection has been idle in both directions for at least
